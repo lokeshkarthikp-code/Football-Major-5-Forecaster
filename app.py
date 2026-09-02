@@ -169,7 +169,7 @@ with tab_any:
         )
         st.markdown("**Scoreline probabilities** (home goals × away goals)")
         st.dataframe(
-            grid.style.format("{:.1%}").background_gradient(cmap="Blues"),
+            grid.style.format("{:.1%}"),
             use_container_width=True,
         )
 
