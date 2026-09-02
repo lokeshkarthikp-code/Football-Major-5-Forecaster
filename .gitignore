@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Scraper cache (multi-hundred MB — never commit)
+~/soccerdata/
+.soccerdata/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data — see note in README.
+# matches.parquet is small (~4k rows) and IS committed so the deployed
+# app has data and the Wednesday Action can diff it. Everything else is
+# derived and stays local.
+data/*.csv
+data/backtest_*.parquet
+data/*.pkl
+
+# API credentials — NEVER commit
+.env
