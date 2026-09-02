@@ -1,0 +1,9 @@
+# Minimal deps for the Streamlit app only (no ingestion).
+# The app reads cached parquet and never touches the network, so it does not
+# need soccerdata -- which pulls in seleniumbase and a browser stack, ~200MB
+# of install that can time out a free-tier deploy.
+pandas>=2.0
+numpy>=1.24
+scipy>=1.11
+streamlit>=1.30
+pyarrow>=14.0
