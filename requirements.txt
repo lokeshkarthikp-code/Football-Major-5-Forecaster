@@ -1,3 +1,7 @@
+# Full pipeline: ingestion, modelling, backtesting, and the app.
+# For deploying the Streamlit app alone, use requirements-app.txt instead --
+# it omits soccerdata, which pulls in seleniumbase and a browser stack the
+# app never touches.
 pandas>=2.0
 numpy>=1.24
 scipy>=1.11
