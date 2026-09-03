@@ -18,6 +18,7 @@ python scripts/check_api.py    # verify token + team names before ingesting
 
 python -m plfc.ingest          # build the dataset (several minutes)
 python -m plfc.backtest        # walk-forward evaluation
+python -m plfc.ledger          # log forecasts for upcoming fixtures
 streamlit run app.py           # dashboard
 ```
 
@@ -29,9 +30,10 @@ calibrated probabilities for upcoming fixtures. A GitHub Action refreshes the
 data every Wednesday at 06:00 UTC, so each matchweek is forecast with current
 form.
 
-The dashboard shows this weekend's fixtures with win/draw/loss probabilities,
-expected goals, a scoreline heatmap, team strength ratings, and a live
-backtest against the market.
+The dashboard has five tabs: this weekend's fixtures with win/draw/loss
+probabilities and expected goals, any custom matchup with a scoreline grid, the
+live track record of past predictions against results, team strength ratings,
+and an evaluation tab that runs the backtest and lists known limitations.
 
 ---
 
@@ -45,7 +47,8 @@ pl-forecaster/
 │   ├── footballdata.py    football-data.org API client (fixtures)
 │   ├── ingest.py          pulls, validation, parquet cache
 │   ├── model.py           Dixon-Coles fit and prediction
-│   └── backtest.py        walk-forward evaluation, calibration, tuning
+│   ├── backtest.py        walk-forward evaluation, calibration, tuning
+│   └── ledger.py          sealed prediction log, reconciled against results
 ├── tests/
 │   ├── test_names.py      resolver behaviour
 │   └── test_model.py      parameter recovery, validation invariants
@@ -59,7 +62,9 @@ pl-forecaster/
 │   └── tests.yml          CI on push/PR
 ├── data/                  parquet cache (matches.parquet is committed)
 ├── app.py                 Streamlit front end
-├── requirements.txt
+├── requirements.txt       full pipeline
+├── requirements-app.txt   slim deps for deploying the app alone
+├── PROJECT_HISTORY.md     full build log and design rationale
 └── .gitignore
 ```
 
@@ -142,9 +147,17 @@ an empirical prior, with shrinkage inversely proportional to time-weighted
 matches observed. Established teams barely shrink; promoted sides sit near the
 prior until they earn their own estimate. The dashboard flags these fixtures.
 
-**Time decay is tuned, not assumed.**
+**Time decay is a measured choice, not an assumption.**
 Each match is weighted `exp(-ξ · age_days)`. `python -m plfc.backtest --tune`
-sweeps ξ. The fitted half-life is itself a reportable finding.
+sweeps ξ.
+
+⚠️ A caveat that matters: ξ = 0.0018 was chosen by judgment *before* any results
+were seen, which is what makes the figures above a clean out-of-sample estimate.
+If you sweep ξ and then quote the winner's Brier as your headline, that number
+is optimistically biased — you have selected a hyperparameter on the same data
+you are reporting. Either keep reporting the untuned figures and describe the
+sweep as a sensitivity analysis, or hold out the most recent season for a clean
+final evaluation.
 
 **The Dixon-Coles τ correction.**
 Independent Poisson underestimates 0-0 and 1-1 and overestimates 1-0 and 0-1 —
@@ -153,20 +166,74 @@ adjusts those four low-score cells.
 
 ---
 
-## Status
+## Results
 
-**Verified:** The model recovers known team strengths from synthetic data at
-r = 0.967, with home advantage fitted at 0.307 against a true 0.260. The
-walk-forward backtest runs end to end and beats base rates on Brier
-(0.614 vs 0.646) and log loss. The test suite passes and is network-free.
+Dataset: **3,440 matches across 10 seasons**. Walk-forward validation, 14-day
+refit cadence, **2,680 out-of-sample predictions**.
 
-**Not yet verified:** The ingestion code has never run against live sources —
-the tests validate the machinery, not real-world skill. Synthetic data is
-generated from the same Poisson process the model assumes, so good performance
-there is partly circular. Expect to debug the first real
-`python -m plfc.ingest`; column names in `read_games()` are the likeliest
-break point, and `audit_names()` reports unresolved names without raising
-while you sort it out.
+| Model | Brier | Log loss | Accuracy |
+|---|---|---|---|
+| Base rates only | 0.6469 | 1.0688 | 43.5% |
+| **Dixon-Coles** | **0.5853** | **0.9842** | **52.6%** |
+| Bookmaker closing line | 0.5749 | 0.9689 | 54.5% |
+
+**The headline is not the accuracy figure.** The market improves on base rates
+by 0.0720 Brier; this model improves on them by 0.0616. It therefore captures
+**86% of the bookmaker's edge over base rates** — using only historical goals,
+with no injuries, lineups, transfers, team news, or odds in training.
+
+The model loses to the closing line, and that is the expected result. Beating
+it would be the red flag.
+
+### Calibration
+
+| Predicted | Observed | n |
+|---|---|---|
+| 0.068 | 0.094 | 298 |
+| 0.159 | 0.157 | 1,186 |
+| 0.249 | 0.259 | 3,045 |
+| 0.347 | 0.344 | 1,208 |
+| 0.449 | 0.440 | 885 |
+| 0.546 | 0.510 | 643 |
+| 0.646 | 0.655 | 444 |
+| 0.749 | 0.734 | 229 |
+| 0.838 | 0.854 | 89 |
+| 0.925 | 0.846 | 13 |
+
+Close to the diagonal wherever the sample is real: when the model says 35%, it
+happens 34% of the time. Two honest notes — the 0.5–0.6 bin runs slightly hot
+(mild overconfidence on near-coin-flips), and the top bin's apparent miss rests
+on 13 observations, which is noise rather than a finding.
+
+### Model verification
+
+Before touching real data, the fitter was checked against synthetic seasons
+generated from *known* team strengths: it recovered attack ratings at
+**r = 0.967** and home advantage at **0.307** against a true 0.260. That
+validates the machinery. It is not evidence of real-world skill — the synthetic
+data comes from the same Poisson process the model assumes, so success there is
+partly circular.
+
+## Live track record
+
+The backtest is **retrospective**: it reconstructs what the model would have
+said, and can be re-run with different settings until the numbers flatter you.
+
+`plfc/ledger.py` adds the **prospective** record. Every Wednesday it writes down
+predictions for unplayed matches, timestamped, and never edits them. Later runs
+fill in what actually happened. A backtest is a claim; an accumulating log is
+evidence.
+
+The ledger is append-only, keeps multiple forecasts per match (scoring the
+latest one made before kickoff), and stores the model parameters on every row so
+old predictions stay attributable to the model that made them.
+
+**It cannot be backfilled.** It starts from the first run — which is exactly why
+it is credible.
+
+```bash
+python -m plfc.ledger      # settle what has been played, forecast what is next
+```
 
 ---
 
