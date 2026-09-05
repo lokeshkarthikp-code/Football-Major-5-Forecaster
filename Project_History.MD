@@ -259,11 +259,40 @@ history.
   happen? A model can be accurate and badly calibrated.
 - **Accuracy** — reported because people ask, but nearly uninformative here.
 
+### `plfc/ledger.py` — the prediction ledger
+
+Added after the first successful backtest, to answer a question the backtest
+cannot: *what did the model actually predict, and what happened?*
+
+**The distinction that matters.** The backtest is **retrospective** — it
+reconstructs what the model would have said by refitting on data available at
+each past date. Leak-free and honest, but re-runnable with different settings
+until the numbers flatter you. Nobody watching can tell whether you swept fifty
+configurations and reported the best.
+
+The ledger is **prospective**. Every Wednesday it writes down predictions for
+matches not yet played, timestamped, and never edits them. Later runs fill in
+what actually happened. A backtest is a claim; an accumulating log is evidence.
+
+**Design decisions:**
+
+- **Append-only.** Re-running on the same day is a no-op, not a rewrite. History
+  is never quietly revised.
+- **Multiple forecasts per match are kept.** One made three weeks out, one made
+  two days out. Scoring uses the latest strictly before kickoff — what a real
+  forecaster would have had.
+- **Model parameters stored per row.** Retune ξ later and old predictions stay
+  attributable to the model that made them.
+- **14-day horizon only.** Forecasting May in September is noise.
+
+**The honest limitation: it cannot be backfilled.** The log starts from the
+first run. That is precisely why it is credible.
+
 ### `app.py` — Streamlit dashboard
 
-Four tabs: this weekend's fixtures, any matchup, team ratings, and an honesty
-tab that runs the backtest live and lists known limitations. Reads only cached
-parquet, so it stays up even if a source is down.
+Five tabs: this weekend's fixtures, any matchup, live track record, team
+ratings, and an honesty tab that runs the backtest and lists limitations. Reads
+only cached parquet, so it stays up even if a source is down.
 
 ---
 
@@ -322,7 +351,21 @@ The season fix was applied with a text pattern that matched in two places,
 clobbering `fetch_schedule` — which has no `raw` variable. A self-inflicted
 wound from careless patching. Fixed.
 
-### 5. ClubElo 502 Bad Gateway
+### 5. Stale-model cache bug
+
+`_model()` in the Streamlit app used `@st.cache_resource` keyed only on
+`(xi, shrinkage)`, with no TTL. Those values do not change when new data
+arrives — so the model would fit once and stay cached forever. The ratings
+table would show fresh data while predictions came from a stale fit.
+
+Silent, and exactly the class of bug the whole project is built to avoid.
+
+**Fix.** Add `last_refresh()` as a third argument to the cache key. It is never
+read in the function body; it exists purely so a data refresh invalidates the
+cache. In deployment the bug partly self-corrects (a redeploy restarts the
+process and clears caches), but it bites hard locally.
+
+### 6. ClubElo 502 Bad Gateway
 
 Their server was down. Retried five times, gave up, logged a warning and
 continued. **Not our bug, and by design not fatal** — Elo is an optional
@@ -410,13 +453,84 @@ Two honest notes:
 - Test suite passing, network-free
 - Calibration measured
 
+**Also done since:**
+
+- Fixtures ingesting: **356 upcoming fixtures** cached
+- Streamlit app rendering correctly, all five tabs working
+- Prediction ledger built, tested, and running in production
+- Pushed to GitHub; CI passing; weekly Action verified end to end
+- Deployed on Streamlit Community Cloud
+- **20 predictions currently sealed and pending results**
+
 **Not yet done:**
 
 - Decay rate ξ is still the assumed 0.0018 (~1-year half-life), not tuned
-- Fixtures not yet ingested (the `fetch_schedule` fix landed after your run)
-- Streamlit app has never rendered
-- Nothing committed to git; no repo, no deployment
+  — **see the warning in the appendix before tuning it**
+- ClubElo still enabled in `refresh()` despite being down and unused; setting
+  `include_elo=False` would cut most of the weekly run time
+- Ledger has no settled predictions yet — the first settle happens on the next
+  Wednesday run
 - Betting log with closing-line-value tracking (discussed, not built)
+
+---
+
+---
+
+## Part 7: Deployment
+
+Getting it running unattended surfaced four more problems worth recording.
+
+### 1. Streamlit could not see the repository
+
+"This repository does not exist" — a GitHub authorisation scope issue on
+Streamlit's side, not a missing repo. Resolved by granting Streamlit repo
+access.
+
+### 2. Action failed with 403: write access not granted
+
+The workflow declares `permissions: contents: write`, but a repo-level default
+of read-only overrides it. Fixed in Settings → Actions → General → Workflow
+permissions → Read and write.
+
+Everything before the push had succeeded — ingest validated 3,440 matches in
+the cloud, the ledger updated — only the final commit was rejected.
+
+### 3. Health check failure: connection refused on 8501
+
+`port = 8502` had been added to `.streamlit/config.toml` to avoid a local
+conflict with another project. That file is committed, so Streamlit Cloud read
+it too: the app bound to 8502 while the platform health-checked 8501.
+
+**The general lesson.** Environment-specific settings belong in flags or
+environment variables, never in files you deploy. Locally the right answer was
+`streamlit run app.py --server.port 8502`.
+
+### 4. ImportError: matplotlib
+
+`Styler.background_gradient` requires matplotlib, which was not installed on
+the deployment. It had never failed locally because the full `requirements.txt`
+environment pulled matplotlib in transitively.
+
+Fixed by dropping the gradient rather than adding the dependency — the heatmap
+was decorative and the numbers carry the information.
+
+**Worth internalising:** a transitive dependency you did not know you had is
+invisible until you deploy somewhere clean.
+
+### The finished pipeline
+
+Every Wednesday at 06:00 UTC, entirely in the cloud:
+
+1. GitHub Action pulls fresh results from Football-Data.co.uk and fixtures from
+   football-data.org
+2. Validates structural invariants; a failure leaves the last good dataset
+   intact
+3. Settles the previous week's ledger predictions against actual results
+4. Logs new forecasts for the coming fortnight
+5. Commits the updated parquet back to the repo
+6. Streamlit Cloud sees the push and redeploys, which also clears its caches
+
+No local machine is involved at any point.
 
 ---
 
@@ -436,6 +550,68 @@ the market rather than against zero.
 2. *Why walk-forward and not k-fold?* Because shuffled CV leaks the future.
 3. *How do you handle promoted teams?* Shrinkage toward an empirical prior,
    with shrinkage decaying as matches accumulate.
+
+### "Why did it work on the first try — is it overfitted?"
+
+A fair suspicion, and the answer is worth understanding properly.
+
+**First, reframe what happened.** The model did not work spectacularly. It
+scored Brier 0.5853 against the market's 0.5749 — it *lost* to the closing
+line. 52.6% accuracy against the market's 54.5%. **If it had beaten the
+market, that would be the red flag.** Landing just short is the signature of
+an honest model.
+
+**Four structural reasons it is hard to overfit here:**
+
+1. **Walk-forward makes leakage impossible by construction.** The model is
+   refit ~190 times, each on data strictly before the test date. It never sees
+   the match it is predicting. This is not a safeguard bolted on — it is the
+   evaluation design.
+
+2. **The model has almost no capacity.** Dixon-Coles fits 2×20 team parameters
+   plus home advantage plus ρ — about 42 numbers — on ~3,400 matches. That is
+   roughly 80 observations per parameter. Overfitting requires enough capacity
+   to memorise noise, and there simply is not any here. This is the opposite
+   situation to a neural network with millions of weights.
+
+3. **It is well-specified for the domain.** Goals genuinely are approximately
+   Poisson-distributed, and team attack/defence strength is a real, estimable
+   quantity. The model is not discovering spurious structure; it is estimating
+   a handful of things that actually exist.
+
+4. **Shrinkage actively regularises.** Every team is pulled toward a prior in
+   proportion to how little has been observed of them.
+
+**Good calibration is itself evidence against overfitting.** An overfit model
+is characteristically overconfident — it would predict 70% and be right 55% of
+the time. The calibration table tracks the diagonal closely, which is what a
+properly regularised model looks like.
+
+### ⚠️ Where overfitting *could* still creep in — read before running `--tune`
+
+Here is the real risk, and it is about to become live.
+
+ξ = 0.0018 and shrinkage = 8.0 were chosen by judgment *before* seeing any
+results. That makes the reported backtest a clean out-of-sample estimate.
+
+`python -m plfc.backtest --tune` sweeps ξ across five values and reports the
+Brier for each. **If you then pick the winner and quote its Brier as your
+headline number, that figure is optimistically biased** — you have selected a
+hyperparameter using the same data you are reporting performance on. It is a
+mild form of overfitting, and a sharp interviewer will spot it.
+
+**Two acceptable ways to handle it:**
+
+- *Cheap and honest:* run the sweep, adopt the best ξ, but keep reporting the
+  original untuned figures as your headline. Describe the sweep as a
+  sensitivity analysis: "performance was stable across half-lives from 6 to 18
+  months," which is a genuine finding and immune to this critique.
+- *Proper:* hold out the most recent season entirely. Tune ξ on seasons
+  2017–2024, then report performance on 2025–26 only, touched once. Costs you
+  sample size but the number is clean.
+
+Either is defensible. Quoting the best sweep result as if it were out-of-sample
+is not.
 
 **Be honest about the ceiling.** Football outcomes sit near the noise ceiling.
 Bookmakers reach 53–55% on three-way results with vastly more information. A

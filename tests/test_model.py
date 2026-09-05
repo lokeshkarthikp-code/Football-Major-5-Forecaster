@@ -35,6 +35,7 @@ def synthetic(seasons: int = 6, seed: int = 7):
             la = np.exp(atk[a] - dfc[h])
             rows.append({
                 "date": d, "season": 2018 + s,
+                "league": "ENG-Premier League",
                 "home_team": h, "away_team": a,
                 "home_goals": rng.poisson(lh), "away_goals": rng.poisson(la),
             })

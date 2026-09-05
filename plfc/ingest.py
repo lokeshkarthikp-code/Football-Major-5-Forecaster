@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .leagues import DEFAULT_LEAGUES, LEAGUES, config
 from .names import resolve_series, write_soccerdata_config
 
 log = logging.getLogger(__name__)
@@ -47,11 +48,11 @@ log = logging.getLogger(__name__)
 DATA = Path(__file__).resolve().parent.parent / "data"
 DATA.mkdir(exist_ok=True)
 
-LEAGUE = "ENG-Premier League"
-MATCHES_PER_SEASON = 380          # 20 teams x 38 matchweeks. Non-negotiable.
-TEAMS_PER_SEASON = 20
+# Structural invariants now live per league in plfc/leagues.py -- Bundesliga
+# is 18/306 and Ligue 1 changed from 20/380 to 18/306 in 2023-24, so a single
+# hardcoded number would fire false alarms on two of five leagues.
 
-KEY_COLS = ["date", "season", "home_team", "away_team"]
+KEY_COLS = ["date", "season", "league", "home_team", "away_team"]
 RESULT_COLS = ["home_goals", "away_goals"]
 
 
@@ -82,10 +83,15 @@ class ValidationError(ValueError):
 
 
 def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> None:
-    """Assert the structural invariants of a PL match table.
+    """Assert structural invariants, per league and per season.
 
-    These checks exist because the failure mode we fear is SILENT. A broken
-    join does not raise -- it just drops rows. So we count them.
+    The failure mode we fear is SILENT: a broken name join does not raise,
+    it just drops rows. So we count them against what each league-season
+    should contain.
+
+    Expectations come from plfc/leagues.py rather than a global constant,
+    because they genuinely differ -- Bundesliga plays 306 matches and
+    Ligue 1 changed size in 2023-24.
     """
     if df.empty:
         raise ValidationError("Match table is empty.")
@@ -99,8 +105,8 @@ def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> 
             n = int(df[c].isna().sum())
             raise ValidationError(f"{n} null value(s) in key column {c!r}.")
 
-    # Self-play is a classic symptom of a bad name merge (two aliases
-    # collapsing onto the same canonical id incorrectly).
+    # Self-play is the classic symptom of a bad name merge -- two aliases
+    # collapsing onto the same canonical id.
     self_play = df[df["home_team"] == df["away_team"]]
     if len(self_play):
         raise ValidationError(
@@ -114,36 +120,48 @@ def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> 
 
     cur = current_season()
     problems: list[str] = []
-    for season, grp in df.groupby("season"):
+
+    for (league, season), grp in df.groupby(["league", "season"]):
+        if league not in LEAGUES:
+            problems.append(f"  {league}: unknown league key")
+            continue
+
+        exp_teams, exp_matches = config(league).expected(int(season))
         n_teams = len(set(grp["home_team"]) | set(grp["away_team"]))
-        if n_teams != TEAMS_PER_SEASON:
-            problems.append(f"  season {season}: {n_teams} teams (expected {TEAMS_PER_SEASON})")
 
         played = grp.dropna(subset=RESULT_COLS) if all(
             c in grp.columns for c in RESULT_COLS
         ) else grp
 
         if season == cur and allow_partial_season:
-            if len(grp) > MATCHES_PER_SEASON:
-                problems.append(f"  season {season}: {len(grp)} matches (max {MATCHES_PER_SEASON})")
-        elif len(played) != MATCHES_PER_SEASON:
-            hint = "likely a dropped team from a bad name join"
-            if n_teams > TEAMS_PER_SEASON:
-                # More than 20 teams means two campaigns bled together --
-                # usually a season assigned from match date rather than from
-                # the source's season key. See _season_code_to_year.
-                hint = ("more than 20 teams -- two seasons have merged; check "
-                        "season assignment, not team names")
+            if len(grp) > exp_matches:
+                problems.append(
+                    f"  {league} {season}: {len(grp)} matches (max {exp_matches})"
+                )
+            continue
+
+        if n_teams != exp_teams:
             problems.append(
-                f"  season {season}: {len(played)} played matches "
-                f"(expected {MATCHES_PER_SEASON}) -- {hint}"
+                f"  {league} {season}: {n_teams} teams (expected {exp_teams})"
+            )
+
+        if len(played) != exp_matches:
+            hint = "likely a dropped team from a bad name join"
+            if n_teams > exp_teams:
+                # More teams than the league holds means two campaigns bled
+                # together -- a season-assignment bug, not a naming one.
+                hint = ("more teams than the league holds -- two seasons have "
+                        "merged; check season assignment, not team names")
+            problems.append(
+                f"  {league} {season}: {len(played)} played matches "
+                f"(expected {exp_matches}) -- {hint}"
             )
 
     if problems:
         raise ValidationError("Season integrity check failed:\n" + "\n".join(problems))
 
-    log.info("Validation passed: %d matches across %d seasons.",
-             len(df), df["season"].nunique())
+    log.info("Validation passed: %d matches, %d leagues, %d seasons.",
+             len(df), df["league"].nunique(), df["season"].nunique())
 
 
 # ---------------------------------------------------------------------------
@@ -174,26 +192,36 @@ def _season_code_to_year(codes: pd.Series) -> pd.Series:
     return codes.map(one).astype("Int64")
 
 
-def fetch_results(seasons: list[int] | None = None) -> pd.DataFrame:
-    """Historical results + closing odds from Football-Data.co.uk."""
+def fetch_results(seasons: list[int] | None = None,
+                  leagues: list[str] | None = None) -> pd.DataFrame:
+    """Historical results + closing odds from Football-Data.co.uk.
+
+    Pulls all requested leagues in one call. soccerdata returns a table
+    indexed by (league, season, game), so the league comes back with the
+    data rather than needing to be stitched on afterwards.
+    """
     import soccerdata as sd
 
-    write_soccerdata_config()          # normalise at the source
+    write_soccerdata_config()          # normalise names at the source
     seasons = seasons or season_range(10)
+    leagues = leagues or DEFAULT_LEAGUES
 
-    mh = sd.MatchHistory(leagues=LEAGUE, seasons=_seasons_as_strings(seasons))
+    mh = sd.MatchHistory(leagues=leagues, seasons=_seasons_as_strings(seasons))
     raw = mh.read_games().reset_index()
 
     df = pd.DataFrame({
         "date": pd.to_datetime(raw["date"], errors="coerce"),
+        "league": raw["league"],
         "home_team": resolve_series(raw["home_team"]),
         "away_team": resolve_series(raw["away_team"]),
         "home_goals": pd.to_numeric(raw.get("FTHG"), errors="coerce"),
         "away_goals": pd.to_numeric(raw.get("FTAG"), errors="coerce"),
     })
 
-    # Closing odds -- Bet365 columns are the most consistently populated.
-    for src, dst in [("B365H", "odds_home"), ("B365D", "odds_draw"), ("B365A", "odds_away")]:
+    # Closing odds. Bet365 is the most consistently populated across leagues
+    # and seasons; these are the benchmark the whole evaluation rests on.
+    for src, dst in [("B365H", "odds_home"), ("B365D", "odds_draw"),
+                     ("B365A", "odds_away")]:
         if src in raw.columns:
             df[dst] = pd.to_numeric(raw[src], errors="coerce")
 
@@ -206,29 +234,43 @@ def fetch_results(seasons: list[int] | None = None) -> pd.DataFrame:
         df["season"] = df["date"].map(
             lambda d: current_season(d) if pd.notna(d) else pd.NA
         ).astype("Int64")
+
     df = df.dropna(subset=["date", "season"]).sort_values("date").reset_index(drop=True)
     return df
 
 
 def fetch_schedule(season: int | None = None,
-                   competition: str = "PL") -> pd.DataFrame:
-    """Full-season fixture list, INCLUDING unplayed matches.
+                   leagues: list[str] | None = None) -> pd.DataFrame:
+    """Forward fixture list from football-data.org, all leagues.
 
-    Sourced from football-data.org rather than scraped. Requires
-    FOOTBALL_DATA_TOKEN -- see plfc/footballdata.py for setup.
+    Requires FOOTBALL_DATA_TOKEN. A failure for one league is logged and
+    skipped rather than aborting the rest -- partial fixtures are far more
+    useful than none.
     """
     from .footballdata import fetch_matches
 
     season = season or current_season()
-    df = fetch_matches(competition=competition, season=season)
+    leagues = leagues or DEFAULT_LEAGUES
 
-    keep = ["date", "home_team", "away_team", "home_goals", "away_goals",
-            "matchweek", "season", "status"]
+    frames = []
+    for lg in leagues:
+        cfg = config(lg)
+        try:
+            part = fetch_matches(competition=cfg.api_code, season=season)
+        except Exception as exc:                      # noqa: BLE001
+            log.warning("Schedule fetch failed for %s (%s) -- skipping.", lg, exc)
+            continue
+        part["league"] = lg
+        frames.append(part)
+
+    if not frames:
+        return pd.DataFrame(columns=KEY_COLS)
+
+    df = pd.concat(frames, ignore_index=True)
+    keep = ["date", "league", "home_team", "away_team", "home_goals",
+            "away_goals", "matchweek", "season", "status"]
     df = df[[c for c in keep if c in df.columns]].copy()
 
-    # The API already stamps each match with its campaign, and fetch_matches
-    # normalises that to a start year. Just make sure the dtype matches the
-    # results feed so the two tables can be compared without surprises.
     if "season" in df.columns:
         df["season"] = pd.to_numeric(df["season"], errors="coerce").astype("Int64")
     else:
@@ -258,40 +300,37 @@ def fetch_elo(as_of: str | datetime | None = None) -> pd.DataFrame:
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def refresh(n_seasons: int = 10, *, include_elo: bool = True) -> pd.DataFrame:
-    """Full weekly refresh. Pull -> canonicalise -> validate -> cache.
+def refresh(n_seasons: int = 10, *, leagues: list[str] | None = None,
+            include_elo: bool = False) -> pd.DataFrame:
+    """Full weekly refresh across all leagues. Pull -> validate -> cache.
 
-    Safe to run repeatedly; soccerdata caches HTTP responses, and we only
-    overwrite the parquet after validation passes. A failed run leaves the
-    previous good dataset intact.
+    Safe to run repeatedly. The parquet is only overwritten after validation
+    passes, so a failed run leaves the previous good dataset intact.
+
+    include_elo defaults to False: ClubElo is an optional baseline that feeds
+    nothing into the model, and its server has been unreliable. Its retry
+    loop was most of the run time for no benefit.
     """
-    log.info("Refreshing Premier League data (%d seasons)...", n_seasons)
+    leagues = leagues or DEFAULT_LEAGUES
+    log.info("Refreshing %d league(s), %d seasons...", len(leagues), n_seasons)
 
-    results = fetch_results(season_range(n_seasons))
+    results = fetch_results(season_range(n_seasons), leagues)
     validate_matches(results)
 
     try:
-        schedule = fetch_schedule()
+        schedule = fetch_schedule(leagues=leagues)
     except Exception as exc:                      # noqa: BLE001
         log.warning(
             "Schedule fetch failed (%s). Continuing without fixtures -- "
             "results and the model are unaffected. Check FOOTBALL_DATA_TOKEN.", exc)
         schedule = pd.DataFrame(columns=KEY_COLS)
 
-    # Unplayed fixtures. The API's own status field is authoritative here --
-    # more reliable than inferring "not yet played" from the results feed,
-    # which lags by a day or two.
+    # The API's own status field is authoritative for "not yet played" --
+    # more reliable than inferring it from the results feed, which lags.
     if not schedule.empty and "status" in schedule.columns:
         fixtures = schedule[
             schedule["status"].isin(["SCHEDULED", "TIMED", "POSTPONED"])
         ].copy()
-    elif not schedule.empty:
-        played = set(zip(results["home_team"], results["away_team"], results["season"]))
-        fixtures = schedule[[
-            (h, a, s) not in played
-            for h, a, s in zip(schedule["home_team"], schedule["away_team"],
-                               schedule["season"])
-        ]].copy()
     else:
         fixtures = pd.DataFrame(columns=KEY_COLS)
 
@@ -308,7 +347,12 @@ def refresh(n_seasons: int = 10, *, include_elo: bool = True) -> pd.DataFrame:
             log.warning("Elo fetch failed (%s) -- non-fatal.", exc)
 
     (DATA / "LAST_REFRESH").write_text(stamp)
-    log.info("Cached %d matches, %d upcoming fixtures.", len(results), len(fixtures))
+
+    by_league = results.groupby("league").size().to_dict()
+    log.info("Cached %d matches (%s), %d upcoming fixtures.",
+             len(results),
+             ", ".join(f"{k.split('-')[-1]}:{v}" for k, v in sorted(by_league.items())),
+             len(fixtures))
     return results
 
 

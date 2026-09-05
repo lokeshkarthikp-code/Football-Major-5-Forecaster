@@ -140,6 +140,18 @@ CANONICAL_TEAMS: dict[str, list[str]] = {
 
 # No folds currently needed. Kept as the hook for future short-form collisions
 # (e.g. if a source emits a bare surname that collides with a canonical id).
+
+# The four continental leagues live in names_intl.py purely for file size.
+# They are merged here so there is exactly ONE registry and one resolver --
+# a second lookup path would be a second place for names to diverge.
+from .names_intl import INTERNATIONAL_LEAGUES  # noqa: E402
+
+for _canon, _aliases in INTERNATIONAL_LEAGUES.items():
+    CANONICAL_TEAMS.setdefault(_canon, [])
+    for _a in _aliases:
+        if _a not in CANONICAL_TEAMS[_canon]:
+            CANONICAL_TEAMS[_canon].append(_a)
+
 _FOLD: dict[str, str] = {}
 
 

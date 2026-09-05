@@ -51,7 +51,7 @@ LEDGER = DATA / "predictions.parquet"
 OUTCOMES = ["home_win", "draw", "away_win"]
 
 COLUMNS = [
-    "match_key", "predicted_at", "match_date", "season",
+    "match_key", "predicted_at", "match_date", "season", "league",
     "home_team", "away_team",
     "home_win", "draw", "away_win",
     "expected_home_goals", "expected_away_goals", "likely_score",
@@ -60,15 +60,17 @@ COLUMNS = [
 ]
 
 
-def match_key(season, home: str, away: str) -> str:
+def match_key(season, home: str, away: str, league: str = "") -> str:
     """Stable identity for a fixture.
 
-    In a league season each ordered pairing occurs exactly once, so
-    season+home+away is unique. Canonical team names make this safe --
-    without them this key would be the single worst place for a name
-    mismatch to hide.
+    Within one league-season each ordered pairing occurs exactly once, so
+    league+season+home+away is unique. League is part of the key because
+    the same two clubs can meet in both a domestic league and a cup.
+
+    Canonical team names make this safe -- without them this key would be
+    the single worst place for a name mismatch to hide.
     """
-    return f"{season}:{home}:{away}"
+    return f"{league}:{season}:{home}:{away}"
 
 
 def load_ledger() -> pd.DataFrame:
@@ -106,7 +108,8 @@ def log_predictions(model, fixtures: pd.DataFrame, *,
 
     rows = []
     for _, f in fixtures.iterrows():
-        key = match_key(f.get("season"), f["home_team"], f["away_team"])
+        key = match_key(f.get("season"), f["home_team"], f["away_team"],
+                        f.get("league", ""))
         if (key, today) in seen:
             continue
 
@@ -116,6 +119,7 @@ def log_predictions(model, fixtures: pd.DataFrame, *,
             "predicted_at": now.isoformat(),
             "match_date": pd.to_datetime(f["date"]),
             "season": f.get("season"),
+            "league": f.get("league", ""),
             "home_team": f["home_team"],
             "away_team": f["away_team"],
             "home_win": p["home_win"],
@@ -159,8 +163,9 @@ def reconcile(results: pd.DataFrame, *, now: datetime | None = None) -> pd.DataF
         return ledger
 
     played["match_key"] = [
-        match_key(s, h, a) for s, h, a in
-        zip(played["season"], played["home_team"], played["away_team"])
+        match_key(s, h, a, lg) for s, h, a, lg in
+        zip(played["season"], played["home_team"], played["away_team"],
+            played.get("league", pd.Series([""] * len(played))))
     ]
     lookup = played.set_index("match_key")[["home_goals", "away_goals"]].to_dict("index")
 
@@ -249,10 +254,15 @@ def track_record(ledger: pd.DataFrame | None = None) -> dict:
     return out
 
 
-def update(xi: float = 0.0018, shrinkage: float = 8.0) -> pd.DataFrame:
-    """One weekly cycle: settle what has been played, predict what is next.
+def update(xi: float = 0.0018, shrinkage: float = 8.0,
+           leagues: list[str] | None = None) -> pd.DataFrame:
+    """One weekly cycle: settle what has been played, forecast what is next.
 
-    Order matters. Reconcile first so the ledger reflects reality, then fit
+    Fits ONE MODEL PER LEAGUE. Dixon-Coles strengths are only identified
+    within a league -- teams meet across leagues too rarely to place their
+    ratings on a common scale, so pooling would produce confident nonsense.
+
+    Order matters: reconcile first so the ledger reflects reality, then fit
     on the freshest data, then log new forecasts.
     """
     from .ingest import load_fixtures, load_matches
@@ -261,19 +271,36 @@ def update(xi: float = 0.0018, shrinkage: float = 8.0) -> pd.DataFrame:
     matches = load_matches()
     reconcile(matches)
 
-    model = DixonColes(xi=xi, shrinkage=shrinkage).fit(matches)
     fixtures = load_fixtures()
+    if fixtures.empty:
+        log.info("No fixtures cached; nothing to forecast.")
+        return load_ledger()
+
+    fixtures = fixtures.copy()
+    fixtures["date"] = pd.to_datetime(fixtures["date"])
 
     # Only forecast the near horizon. Predicting May in September is noise:
     # squad and form information is worthless at that range, and it would
     # bloat the ledger with forecasts nobody would stand behind.
-    if not fixtures.empty:
-        fixtures = fixtures.copy()
-        fixtures["date"] = pd.to_datetime(fixtures["date"])
-        horizon = pd.Timestamp.now().normalize() + pd.Timedelta(days=14)
-        fixtures = fixtures[fixtures["date"] <= horizon]
+    horizon = pd.Timestamp.now().normalize() + pd.Timedelta(days=14)
+    fixtures = fixtures[fixtures["date"] <= horizon]
 
-    return log_predictions(model, fixtures, xi=xi, shrinkage=shrinkage)
+    targets = leagues or sorted(set(matches["league"].dropna()))
+    out = load_ledger()
+
+    for lg in targets:
+        lg_matches = matches[matches["league"] == lg]
+        lg_fixtures = fixtures[fixtures["league"] == lg] if "league" in fixtures else fixtures
+        if lg_matches.empty or lg_fixtures.empty:
+            continue
+        try:
+            model = DixonColes(xi=xi, shrinkage=shrinkage).fit(lg_matches)
+        except ValueError as exc:
+            log.warning("Could not fit %s (%s) -- skipping.", lg, exc)
+            continue
+        out = log_predictions(model, lg_fixtures, xi=xi, shrinkage=shrinkage)
+
+    return out
 
 
 def _main() -> None:

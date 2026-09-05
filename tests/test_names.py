@@ -61,22 +61,34 @@ class TestCommonVariants:
 class TestRefusesToGuess:
     """Fuzzy matching must SUGGEST, never decide.
 
-    The real case: 'Barcelona' fuzzy-matches 'Arsenal' above a 0.6 cutoff.
-    An auto-resolver would silently accept that. This is why we raise.
+    An auto-resolver at a 0.6 similarity cutoff will happily map a club it
+    has never seen onto a superficially similar name and corrupt the data
+    silently. Raising forces a human to add the alias deliberately.
     """
 
     def test_unknown_team_raises(self):
         with pytest.raises(TeamNameError):
-            resolve("Barcelona")
+            resolve("Boca Juniors")
 
     def test_error_carries_suggestion(self):
         with pytest.raises(TeamNameError, match="Nottingham Forest"):
             resolve("Notngham Forset")
 
-    def test_never_autoresolves_across_clubs(self):
-        """Manchester City must never resolve to Manchester United."""
-        assert resolve("Manchester City") == "Manchester City"
-        assert resolve("Manchester United") == "Manchester United"
+    @pytest.mark.parametrize("a,b", [
+        ("Manchester City", "Manchester United"),
+        ("Ath Madrid", "Ath Bilbao"),          # one token apart, different clubs
+        ("Inter", "Milan"),                     # both "Milan" colloquially
+        ("Real Sociedad", "Real Madrid"),
+        ("Dortmund", "M'gladbach"),             # both Borussia
+    ])
+    def test_never_collapses_distinct_clubs(self, a, b):
+        """Near-identical strings must resolve to DIFFERENT canonical ids.
+
+        These are the pairs a fuzzy matcher would merge. Merging them would
+        corrupt a decade of data with no error raised.
+        """
+        ra, rb = resolve(a), resolve(b)
+        assert ra != rb, f"{a!r} and {b!r} both resolved to {ra!r}"
 
     def test_empty_and_none(self):
         with pytest.raises(TeamNameError):
@@ -85,7 +97,7 @@ class TestRefusesToGuess:
             resolve(None)
 
     def test_non_strict_returns_none(self):
-        assert resolve("Barcelona", strict=False) is None
+        assert resolve("Boca Juniors", strict=False) is None
 
 
 class TestSeriesResolution:
@@ -96,16 +108,16 @@ class TestSeriesResolution:
 
     def test_collects_all_failures_at_once(self):
         """One run should tell you every alias to add, not just the first."""
-        s = pd.Series(["Arsenal", "Barcelona", "Real Madrid"])
+        s = pd.Series(["Arsenal", "Boca Juniors", "River Plate"])
         with pytest.raises(TeamNameError) as exc:
             resolve_series(s)
         msg = str(exc.value)
-        assert "Barcelona" in msg and "Real Madrid" in msg
+        assert "Boca Juniors" in msg and "River Plate" in msg
 
     def test_audit_is_non_raising(self):
-        df = pd.DataFrame({"team": ["Arsenal", "Barcelona"]})
+        df = pd.DataFrame({"team": ["Arsenal", "Boca Juniors"]})
         out = audit_names((df, "team"))
-        assert out["team"] == ["Barcelona"]
+        assert out["team"] == ["Boca Juniors"]
 
 
 class TestRegistryIntegrity:
