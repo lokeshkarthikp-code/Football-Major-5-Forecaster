@@ -88,25 +88,62 @@ def calibration_table(probs: pd.DataFrame, actual: pd.Series, bins: int = 10) ->
     return out.dropna()
 
 
-def walk_forward(matches: pd.DataFrame, *, xi: float = 0.0018,
-                 shrinkage: float = 8.0, min_train_matches: int = 760,
-                 step_days: int = 7) -> pd.DataFrame:
+def walk_forward(matches: pd.DataFrame, *, league: str | None = None,
+                 xi: float = 0.0018, shrinkage: float = 8.0,
+                 min_train_matches: int = 760, step_days: int = 14,
+                 warm_start: bool = True,
+                 progress: bool = False) -> pd.DataFrame:
     """Refit periodically, predict forward. Returns one row per test match.
 
-    step_days=7 refits weekly, mirroring how the deployed app behaves. Refit
-    cadence is a real cost/accuracy tradeoff and worth stating explicitly.
+    ONE LEAGUE AT A TIME. Dixon-Coles strengths are identified from the graph
+    of who played whom; within a league that graph is dense, across leagues it
+    is a handful of European ties connecting hundreds of clubs. Fitting a
+    single model to a multi-league table would place La Liga and Bundesliga
+    strengths on a common scale that the data cannot support, and it would do
+    so silently. So if `matches` spans more than one league and `league` is
+    not given, this raises rather than pooling.
+
+    step_days=14 mirrors the deployed refit cadence. Refit cadence is a real
+    cost/accuracy tradeoff and worth stating explicitly.
+
+    warm_start seeds each fit from the previous one. Consecutive fits differ
+    by two weeks of matches, so the previous solution is close to the new
+    optimum. It cuts runtime substantially, which matters at five leagues.
     """
     df = matches.dropna(subset=["home_goals", "away_goals"]).copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+
+    if "league" in df.columns:
+        present = sorted(set(df["league"].dropna()))
+        if league is not None:
+            if league not in present:
+                raise ValueError(
+                    f"League {league!r} not present. Available: {present}"
+                )
+            df = df[df["league"] == league]
+        elif len(present) > 1:
+            raise ValueError(
+                "matches spans multiple leagues "
+                f"({', '.join(present)}) but no league was specified. "
+                "Dixon-Coles strengths are only identified within a league -- "
+                "pass league=..., or use plfc.multileague.backtest_all()."
+            )
+
+    df["date"] = pd.to_datetime(df["date"])
+    if getattr(df["date"].dt, "tz", None) is not None:
+        df["date"] = df["date"].dt.tz_localize(None)
     df = df.sort_values("date").reset_index(drop=True)
 
     if len(df) <= min_train_matches:
-        raise ValueError(f"Need > {min_train_matches} matches; got {len(df)}.")
+        raise ValueError(
+            f"Need > {min_train_matches} matches; got {len(df)}"
+            + (f" for {league}." if league else ".")
+        )
 
     start = df.loc[min_train_matches, "date"]
     end = df["date"].max()
 
     preds: list[dict] = []
+    prev: DixonColes | None = None
     cursor = start
     while cursor <= end:
         nxt = cursor + pd.Timedelta(days=step_days)
@@ -116,21 +153,35 @@ def walk_forward(matches: pd.DataFrame, *, xi: float = 0.0018,
             continue
 
         try:
-            model = DixonColes(xi=xi, shrinkage=shrinkage).fit(df, as_of=cursor)
+            model = DixonColes(xi=xi, shrinkage=shrinkage).fit(
+                df, as_of=cursor, warm_start=prev if warm_start else None
+            )
         except ValueError:
             cursor = nxt
             continue
+        prev = model
+
+        if progress:
+            print(f"  {league or 'all'} {cursor.date()}  "
+                  f"{len(window):>3} matches  ({len(preds)} predicted so far)",
+                  flush=True)
 
         for _, r in window.iterrows():
             p = model.predict(r["home_team"], r["away_team"])
             preds.append({
                 "date": r["date"],
+                "league": r.get("league", league or ""),
+                "season": r.get("season"),
                 "home_team": r["home_team"],
                 "away_team": r["away_team"],
                 "home_win": p["home_win"],
                 "draw": p["draw"],
                 "away_win": p["away_win"],
+                "likely_score": p["likely_score"],
+                "actual_home_goals": r["home_goals"],
+                "actual_away_goals": r["away_goals"],
                 "actual": actual_outcome(r["home_goals"], r["away_goals"]),
+                "is_cold_start": bool(p["is_new_home"] or p["is_new_away"]),
                 "odds_home": r.get("odds_home", np.nan),
                 "odds_draw": r.get("odds_draw", np.nan),
                 "odds_away": r.get("odds_away", np.nan),
@@ -140,13 +191,13 @@ def walk_forward(matches: pd.DataFrame, *, xi: float = 0.0018,
     return pd.DataFrame(preds)
 
 
-def evaluate(results: pd.DataFrame) -> pd.DataFrame:
+def evaluate(results: pd.DataFrame, *, label: str = "Dixon-Coles") -> pd.DataFrame:
     """Compare the model against baselines and the closing line."""
     actual = results["actual"]
     rows = []
 
     rows.append({
-        "model": "Dixon-Coles",
+        "model": label,
         "brier": brier(results, actual),
         "log_loss": log_loss(results, actual),
         "accuracy": accuracy(results, actual),
@@ -182,13 +233,13 @@ def evaluate(results: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def tune_decay(matches: pd.DataFrame,
+def tune_decay(matches: pd.DataFrame, *, league: str | None = None,
                grid: list[float] | None = None) -> pd.DataFrame:
     """Sweep the time-decay rate. The half-life is a finding, not a guess."""
     grid = grid or [0.0005, 0.001, 0.0018, 0.003, 0.005]
     out = []
     for xi in grid:
-        res = walk_forward(matches, xi=xi)
+        res = walk_forward(matches, league=league, xi=xi)
         if res.empty:
             continue
         out.append({
@@ -212,6 +263,9 @@ def _main() -> None:
     from .ingest import DATA, load_matches
 
     ap = argparse.ArgumentParser(description="Walk-forward backtest.")
+    ap.add_argument("--league", type=str, default=None,
+                    help="League key to backtest. Required if the cached data "
+                         "spans more than one league.")
     ap.add_argument("--xi", type=float, default=0.0018,
                     help="Time-decay rate per day (default 0.0018 ~= 1y half-life).")
     ap.add_argument("--shrinkage", type=float, default=8.0)
@@ -228,14 +282,15 @@ def _main() -> None:
 
     if args.tune:
         print("\nDecay sweep (this refits the whole history once per xi):\n")
-        print(tune_decay(matches).to_string(index=False))
+        print(tune_decay(matches, league=args.league).to_string(index=False))
         return
 
-    print(f"\nWalk-forward backtest: xi={args.xi}, step={args.step_days}d")
+    print(f"\nWalk-forward backtest: {args.league or 'single league'}, "
+          f"xi={args.xi}, step={args.step_days}d")
     print("This refits the model at every step and will take a few minutes.\n")
 
-    res = walk_forward(matches, xi=args.xi, shrinkage=args.shrinkage,
-                       step_days=args.step_days)
+    res = walk_forward(matches, league=args.league, xi=args.xi,
+                       shrinkage=args.shrinkage, step_days=args.step_days)
     if res.empty:
         print("No predictions produced -- not enough history?")
         return

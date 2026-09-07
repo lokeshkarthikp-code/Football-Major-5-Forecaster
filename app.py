@@ -1,10 +1,15 @@
 """
-Premier League match forecaster -- Streamlit front end.
+European football match forecaster -- Streamlit front end.
 
 Run:  streamlit run app.py
 
 Reads only the cached parquet files. No network calls at request time, so
 the app stays up even if a data source is down.
+
+ONE MODEL PER LEAGUE. The league selector in the sidebar switches which
+fitted model everything below is reading from. Ratings and strengths are
+comparable within a league and never across leagues, so nothing here ever
+puts two leagues in the same ranked table.
 """
 
 from __future__ import annotations
@@ -16,11 +21,17 @@ import streamlit as st
 
 from plfc.backtest import OUTCOMES, calibration_table, evaluate, walk_forward
 from plfc.ingest import last_refresh, load_fixtures, load_matches
+from plfc.leagues import display_name
 from plfc.ledger import latest_before_kickoff, load_ledger, track_record
 from plfc.model import DixonColes
+from plfc.multileague import available_leagues
 
-st.set_page_config(page_title="PL Forecaster", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="Football Forecaster", page_icon="⚽", layout="wide")
 
+
+# ---------------------------------------------------------------------------
+# Cached loaders
+# ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600)
 def _matches() -> pd.DataFrame:
@@ -38,33 +49,43 @@ def _ledger() -> pd.DataFrame:
 
 
 @st.cache_resource
-def _model(xi: float, shrinkage: float, data_version: str) -> DixonColes:
-    """Fit the model.
+def _model(league: str, xi: float, shrinkage: float,
+           data_version: str) -> DixonColes:
+    """Fit one league's model.
 
     `data_version` is never read in the body -- it exists purely to key the
     cache. Without it, @st.cache_resource holds the fitted model for the life
     of the process, so a data refresh would update the ratings table while
     predictions quietly came from a stale fit. Silent staleness is exactly
     the failure mode this project is built to avoid.
+
+    `league` is part of the key for the same reason: without it, switching
+    leagues in the sidebar would show you a different league's model.
     """
-    return DixonColes(xi=xi, shrinkage=shrinkage).fit(_matches())
+    df = _matches()
+    sub = df[df["league"] == league] if "league" in df.columns else df
+    return DixonColes(xi=xi, shrinkage=shrinkage).fit(sub)
 
 
 def _pct(x: float) -> str:
     return f"{x * 100:.0f}%"
 
 
+def _score_str(hg, ag) -> str:
+    if pd.isna(hg) or pd.isna(ag):
+        return ""
+    return f"{int(hg)}-{int(ag)}"
+
+
+def _filter_league(df: pd.DataFrame, league: str) -> pd.DataFrame:
+    if df.empty or "league" not in df.columns:
+        return df
+    return df[df["league"] == league]
+
+
 # ---------------------------------------------------------------------------
-
-st.title("Premier League Match Forecaster")
-
-stamp = last_refresh()
-if stamp:
-    age = datetime.now(timezone.utc) - datetime.fromisoformat(stamp)
-    st.caption(
-        f"Data refreshed {stamp[:16].replace('T', ' ')} UTC "
-        f"({age.days}d {age.seconds // 3600}h ago). Auto-refresh runs Wednesdays."
-    )
+# Header and league selection
+# ---------------------------------------------------------------------------
 
 try:
     matches = _matches()
@@ -72,7 +93,20 @@ except FileNotFoundError:
     st.error("No cached data. Run `python -m plfc.ingest` first.")
     st.stop()
 
+leagues = available_leagues(matches)
+if not leagues:
+    st.error("No `league` column in the cached data. Re-run the ingest.")
+    st.stop()
+
+stamp = last_refresh()
+
 with st.sidebar:
+    st.header("League")
+    league = st.radio(
+        "League", leagues, format_func=display_name, label_visibility="collapsed"
+    )
+
+    st.divider()
     st.header("Model settings")
     xi = st.select_slider(
         "Time-decay rate (ξ)",
@@ -86,20 +120,34 @@ with st.sidebar:
              "toward the league prior.",
     )
     st.caption(f"Half-life ≈ {int(0.693 / xi)} days")
+    st.caption("Each league is fitted separately. Strengths are not "
+               "comparable between leagues.")
 
-model = _model(xi, shrinkage, stamp or "unknown")
+st.title(f"{display_name(league)} Match Forecaster")
 
-tab_fix, tab_any, tab_rec, tab_rate, tab_val = st.tabs(
-    ["This weekend", "Any fixture", "Track record", "Team ratings", "How good is it?"]
+if stamp:
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(stamp)
+    st.caption(
+        f"Data refreshed {stamp[:16].replace('T', ' ')} UTC "
+        f"({age.days}d {age.seconds // 3600}h ago). Auto-refresh runs Wednesdays."
+    )
+
+league_matches = _filter_league(matches, league)
+model = _model(league, xi, shrinkage, stamp or "unknown")
+
+tab_fix, tab_any, tab_week, tab_rec, tab_rate, tab_val = st.tabs(
+    ["This weekend", "Any fixture", "Weekly scorecard", "Track record",
+     "Team ratings", "How good is it?"]
 )
 
 
 # --- upcoming fixtures -----------------------------------------------------
 with tab_fix:
-    fixtures = _fixtures()
+    fixtures = _filter_league(_fixtures(), league)
     if fixtures.empty:
-        st.info("No upcoming fixtures cached. Run a refresh.")
+        st.info("No upcoming fixtures cached for this league. Run a refresh.")
     else:
+        fixtures = fixtures.copy()
         fixtures["date"] = pd.to_datetime(fixtures["date"])
         now = pd.Timestamp.now().normalize()
         horizon = st.radio(
@@ -127,7 +175,8 @@ with tab_fix:
             for _, r in preds.iterrows():
                 new_flag = ""
                 if r["is_new_home"] or r["is_new_away"]:
-                    new_flag = "  ⚠️ includes a team with no PL history — prior-based estimate"
+                    new_flag = ("  ⚠️ includes a team with no history in this "
+                                "league — prior-based estimate")
 
                 with st.container(border=True):
                     st.markdown(
@@ -149,10 +198,10 @@ with tab_fix:
 
 # --- arbitrary matchup -----------------------------------------------------
 with tab_any:
-    teams = sorted(set(matches["home_team"]) | set(matches["away_team"]))
+    teams = sorted(set(league_matches["home_team"]) | set(league_matches["away_team"]))
     c1, c2 = st.columns(2)
-    home = c1.selectbox("Home", teams, index=teams.index("Arsenal") if "Arsenal" in teams else 0)
-    away = c2.selectbox("Away", teams, index=1)
+    home = c1.selectbox("Home", teams, index=0)
+    away = c2.selectbox("Away", teams, index=min(1, len(teams) - 1))
 
     if home == away:
         st.warning("Pick two different teams.")
@@ -168,10 +217,158 @@ with tab_any:
             m, index=[f"{i}" for i in range(6)], columns=[f"{i}" for i in range(6)]
         )
         st.markdown("**Scoreline probabilities** (home goals × away goals)")
-        st.dataframe(
-            grid.style.format("{:.1%}"),
-            use_container_width=True,
+        st.dataframe(grid.style.format("{:.1%}"), use_container_width=True)
+
+
+# --- weekly scorecard ------------------------------------------------------
+with tab_week:
+    st.markdown(
+        """
+How many forecasts the model made each week, and how many it got right —
+split into two separate questions:
+
+- **Result** — did it call the home win / draw / away win correctly?
+- **Exact score** — did its single most likely scoreline match the actual one?
+
+These are very different bars. The result is a three-way call. The exact
+score is one cell out of a hundred-plus, and the model's own most likely
+scoreline typically carries only a 10–15% probability, so a low hit rate
+here is expected rather than a fault.
+        """
+    )
+
+    led = _filter_league(_ledger(), league)
+    view = latest_before_kickoff(led) if not led.empty else pd.DataFrame()
+
+    if view.empty:
+        st.info(
+            "No sealed predictions for this league yet. Run "
+            "`python -m plfc.ledger` to start logging forecasts. The log "
+            "builds from the first run — it cannot be backfilled, which is "
+            "the point."
         )
+    else:
+        settled = view[view["actual"].notna() & (view["actual"] != "")].copy()
+
+        if settled.empty:
+            st.info(
+                f"{len(view)} prediction(s) logged, none settled yet. Results "
+                "fill in on the next Wednesday run after the matches are played."
+            )
+        else:
+            settled["match_date"] = pd.to_datetime(settled["match_date"])
+            settled["predicted"] = settled[OUTCOMES].idxmax(axis=1)
+            settled["result_hit"] = settled["predicted"] == settled["actual"]
+            settled["actual_score"] = [
+                _score_str(h, a) for h, a in
+                zip(settled["actual_home_goals"], settled["actual_away_goals"])
+            ]
+            settled["score_hit"] = (
+                settled["likely_score"].astype(str) == settled["actual_score"]
+            )
+            settled["week_start"] = (
+                settled["match_date"] - pd.to_timedelta(
+                    settled["match_date"].dt.weekday, unit="D")
+            ).dt.normalize()
+
+            n = len(settled)
+            n_res = int(settled["result_hit"].sum())
+            n_scr = int(settled["score_hit"].sum())
+
+            st.markdown("#### Running totals")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Predictions settled", n)
+            c2.metric("Result correct", f"{n_res} / {n}",
+                      delta=f"{n_res / n:.0%}", delta_color="off")
+            c3.metric("Exact score correct", f"{n_scr} / {n}",
+                      delta=f"{n_scr / n:.0%}", delta_color="off")
+
+            if n < 50:
+                st.warning(
+                    f"Only {n} settled predictions. Football is high-variance: "
+                    "at the model's measured ~53% result accuracy, a run of "
+                    "8-from-10 happens by chance roughly one week in twenty. "
+                    "Read these as a log, not as evidence, until you have a "
+                    "few hundred."
+                )
+
+            weekly = (
+                settled.groupby("week_start")
+                .agg(predictions=("result_hit", "size"),
+                     result_correct=("result_hit", "sum"),
+                     score_correct=("score_hit", "sum"))
+                .reset_index()
+                .sort_values("week_start", ascending=False)
+            )
+            weekly["result_%"] = (
+                weekly["result_correct"] / weekly["predictions"]
+            ).map("{:.0%}".format)
+            weekly["score_%"] = (
+                weekly["score_correct"] / weekly["predictions"]
+            ).map("{:.0%}".format)
+            weekly["week"] = weekly["week_start"].dt.strftime("w/c %d %b %Y")
+
+            st.markdown("#### Week by week")
+            st.dataframe(
+                weekly[["week", "predictions", "result_correct", "result_%",
+                        "score_correct", "score_%"]],
+                use_container_width=True, hide_index=True,
+            )
+
+            cols = ["match_date", "home_team", "away_team", "home_win", "draw",
+                    "away_win", "predicted", "likely_score", "actual_score",
+                    "actual", "result_hit", "score_hit"]
+
+            with st.expander(f"Every settled prediction ({n} matches)"):
+                st.dataframe(
+                    settled[cols].sort_values("match_date", ascending=False)
+                    .round(3),
+                    use_container_width=True, hide_index=True, height=460,
+                )
+
+            with st.expander("Break it down week by week"):
+                for wk in weekly["week_start"]:
+                    grp = settled[settled["week_start"] == wk]
+                    hits = int(grp["result_hit"].sum())
+                    scr = int(grp["score_hit"].sum())
+                    st.markdown(
+                        f"**{wk.strftime('w/c %d %b %Y')}** — "
+                        f"{hits}/{len(grp)} results, {scr}/{len(grp)} exact scores"
+                    )
+                    st.dataframe(
+                        grp[cols].sort_values("match_date").round(3),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            with st.expander("Only the ones it got wrong"):
+                miss = settled[~settled["result_hit"]]
+                if miss.empty:
+                    st.success("No incorrect results yet.")
+                else:
+                    miss = miss.copy()
+                    miss["p_assigned"] = miss.apply(
+                        lambda r: r[r["actual"]], axis=1)
+                    st.caption(
+                        "`p_assigned` is the probability the model gave to what "
+                        "actually happened. A miss at 30% is the model working "
+                        "as intended; a miss at 5% is worth looking at."
+                    )
+                    st.dataframe(
+                        miss[cols + ["p_assigned"]]
+                        .sort_values("p_assigned").round(3),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            with st.expander("Exact-score hits only"):
+                got = settled[settled["score_hit"]]
+                if got.empty:
+                    st.info("No exact scorelines called correctly yet.")
+                else:
+                    st.dataframe(
+                        got[cols].sort_values("match_date", ascending=False)
+                        .round(3),
+                        use_container_width=True, hide_index=True,
+                    )
 
 
 # --- live track record -----------------------------------------------------
@@ -189,12 +386,11 @@ was played and is never edited.
         """
     )
 
-    led = _ledger()
+    led = _filter_league(_ledger(), league)
     if led.empty:
         st.info(
-            "No predictions logged yet. Run `python -m plfc.ledger` to record "
-            "forecasts for upcoming fixtures. The log starts building from the "
-            "first run — there is no way to backfill it, which is the point."
+            "No predictions logged yet for this league. Run "
+            "`python -m plfc.ledger` to record forecasts for upcoming fixtures."
         )
     else:
         rec = track_record(led)
@@ -215,37 +411,17 @@ was played and is never edited.
 
         view = latest_before_kickoff(led)
         if not view.empty:
-            settled = view[view["actual"].notna() & (view["actual"] != "")]
             pending = view[view["actual"].isna() | (view["actual"] == "")]
-
             if not pending.empty:
-                st.markdown("**Awaiting result**")
-                st.dataframe(
-                    pending[[
-                        "match_date", "home_team", "away_team",
-                        "home_win", "draw", "away_win", "likely_score",
-                    ]].sort_values("match_date").round(3),
-                    use_container_width=True, hide_index=True,
-                )
-
-            if not settled.empty:
-                st.markdown("**Settled — prediction vs result**")
-                show = settled.copy()
-                show["predicted"] = show[OUTCOMES].idxmax(axis=1)
-                show["hit"] = show["predicted"] == show["actual"]
-                show["score"] = (
-                    show["actual_home_goals"].astype("Int64").astype(str)
-                    + "–"
-                    + show["actual_away_goals"].astype("Int64").astype(str)
-                )
-                st.dataframe(
-                    show[[
-                        "match_date", "home_team", "away_team",
-                        "home_win", "draw", "away_win",
-                        "score", "actual", "hit",
-                    ]].sort_values("match_date", ascending=False).round(3),
-                    use_container_width=True, hide_index=True,
-                )
+                with st.expander(f"Awaiting result ({len(pending)})", expanded=True):
+                    st.dataframe(
+                        pending[[
+                            "match_date", "home_team", "away_team",
+                            "home_win", "draw", "away_win", "likely_score",
+                        ]].sort_values("match_date").round(3),
+                        use_container_width=True, hide_index=True,
+                    )
+            st.caption("Full settled history lives in the Weekly scorecard tab.")
 
 
 # --- ratings ---------------------------------------------------------------
@@ -260,7 +436,13 @@ with tab_rate:
     st.caption(
         f"Home advantage: {model.home_adv:.3f} (log scale) · "
         f"Low-score correction ρ: {model.rho:.3f} · "
-        f"Half-life: {model.half_life_days:.0f} days"
+        f"Half-life: {model.half_life_days:.0f} days · "
+        f"{len(model.teams)} teams in {display_name(league)}"
+    )
+    st.info(
+        "These numbers are on a scale estimated from this league alone. "
+        "A 0.9 here and a 0.9 in another league are not the same thing — "
+        "clubs meet across leagues too rarely to place them on a common scale."
     )
 
 
@@ -278,9 +460,10 @@ Football outcomes sit close to the noise ceiling; the market reaches roughly
 model has. Getting close to it is the honest goal.
         """
     )
-    if st.button("Run backtest (takes a minute)"):
+    if st.button(f"Run backtest for {display_name(league)} (takes a minute)"):
         with st.spinner("Walking forward…"):
-            res = walk_forward(matches, xi=xi, shrinkage=shrinkage, step_days=14)
+            res = walk_forward(matches, league=league, xi=xi,
+                               shrinkage=shrinkage, step_days=14)
             st.dataframe(evaluate(res).round(4), use_container_width=True)
 
             cal = calibration_table(res, res["actual"])
@@ -305,6 +488,10 @@ model has. Getting close to it is the honest goal.
   smoothly, which a new appointment violates.
 - **Odds normalisation is proportional**, which slightly distorts longshots
   (favourite-longshot bias).
+- **Refitting is not learning from errors.** Each refit re-estimates team
+  strength from newer goals. It does not adjust the model's probabilities
+  based on how its past probabilities turned out — that is a calibration
+  layer, and it is not built yet.
 - This is a forecasting exercise, not betting advice.
             """
         )

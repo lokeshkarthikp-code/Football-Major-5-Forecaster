@@ -213,10 +213,14 @@ def latest_before_kickoff(ledger: pd.DataFrame | None = None) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # .tail(1) not .last(): GroupBy.last() returns the last NON-NULL value
+    # per column, which silently stitches together a row that never existed
+    # when a later forecast has a null the earlier one filled.
     return (
         df.sort_values("predicted_at")
-          .groupby("match_key", as_index=False)
-          .last()
+          .groupby("match_key", as_index=False, group_keys=False)
+          .tail(1)
+          .reset_index(drop=True)
     )
 
 

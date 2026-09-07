@@ -97,12 +97,21 @@ class DixonColes:
     # -- fitting ------------------------------------------------------------
 
     def fit(self, matches: pd.DataFrame, *, as_of: pd.Timestamp | None = None,
-            maxiter: int = 400) -> "DixonColes":
+            maxiter: int = 400,
+            warm_start: "DixonColes | None" = None) -> "DixonColes":
         """Fit by weighted maximum likelihood.
 
         `matches` needs: date, home_team, away_team, home_goals, away_goals.
         Only matches strictly before `as_of` are used -- this is the guard
         against lookahead leakage during backtesting.
+
+        `warm_start` seeds the optimiser from an already-fitted model. In a
+        walk-forward backtest consecutive fits differ by one week of matches,
+        so the previous solution is a far better starting point than a vector
+        of zeros. This changes only the starting point, never the objective,
+        so the optimum it converges to is the same one -- it just gets there
+        in fewer iterations. Teams the previous model never saw start at the
+        promoted prior.
         """
         df = matches.dropna(subset=["home_goals", "away_goals"]).copy()
         df["date"] = pd.to_datetime(df["date"])
@@ -153,9 +162,20 @@ class DixonColes:
             neg += 1e3 * (atk.mean() ** 2)
             return neg
 
-        x0 = np.concatenate([
-            np.zeros(n), np.zeros(n), [self.home_adv], [self.rho],
-        ])
+        if warm_start is not None and warm_start.attack:
+            prior = warm_start.promoted_prior
+            atk0 = np.array([warm_start.attack.get(t, prior) for t in self.teams])
+            dfc0 = np.array([warm_start.defence.get(t, prior) for t in self.teams])
+            x0 = np.concatenate([
+                np.clip(atk0, -3, 3), np.clip(dfc0, -3, 3),
+                [np.clip(warm_start.home_adv, -1, 1)],
+                [np.clip(warm_start.rho, -0.3, 0.3)],
+            ])
+        else:
+            x0 = np.concatenate([
+                np.zeros(n), np.zeros(n), [self.home_adv], [self.rho],
+            ])
+
         bounds = [(-3, 3)] * (2 * n) + [(-1, 1), (-0.3, 0.3)]
 
         res = minimize(nll, x0, method="L-BFGS-B", bounds=bounds,
