@@ -7,10 +7,6 @@ venv/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# Scraper cache (multi-hundred MB — never commit)
-~/soccerdata/
-.soccerdata/
-
 # Streamlit
 .streamlit/secrets.toml
 
@@ -22,6 +18,7 @@ Thumbs.db
 # matches.parquet is small (~4k rows) and IS committed so the deployed
 # app has data and the Wednesday Action can diff it. Everything else is
 # derived and stays local.
+# Raw CSV cache -- re-downloadable, no need to commit
 data/*.csv
 data/backtest_*.parquet
 data/*.pkl

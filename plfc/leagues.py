@@ -15,6 +15,18 @@ single fixed invariant would flag every season on one side of that line.
 Season-dependent config is not over-engineering here; it is the minimum
 needed to avoid crying wolf.
 
+CURTAILED SEASONS
+-----------------
+Some seasons genuinely did not finish. Ligue 1 abandoned 2019-20 outright
+after the COVID suspension while every other major league resumed and
+completed it. Its 279 matches are correct history.
+
+A validator that flags real history as corruption is as harmful as one
+that misses corruption: both erode trust in it. So known-incomplete
+seasons are recorded explicitly, with a reason, and skip the match-count
+check -- but still get checked for team count, because a name-join bug
+inside a curtailed season would otherwise hide behind the exemption.
+
 WHY MODELS ARE FITTED PER LEAGUE
 --------------------------------
 Dixon-Coles estimates team strengths from a graph of who played whom.
@@ -43,6 +55,9 @@ class LeagueConfig:
     # Season-start-year -> (teams, matches). The entry with the largest
     # start year that is <= the season in question applies.
     format_by_season: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # Seasons that did not run to completion, mapped to a short reason.
+    # The match-count check is skipped for these; the team count is not.
+    curtailed: dict[int, str] = field(default_factory=dict)
 
     def expected(self, season: int) -> tuple[int, int]:
         """(teams, matches) expected for a completed season."""
@@ -53,6 +68,10 @@ class LeagueConfig:
         else:
             key = max(applicable)
         return self.format_by_season[key]
+
+    def is_curtailed(self, season: int) -> str | None:
+        """Reason this season did not complete, or None if it did."""
+        return self.curtailed.get(season)
 
 
 LEAGUES: dict[str, LeagueConfig] = {
@@ -81,6 +100,13 @@ LEAGUES: dict[str, LeagueConfig] = {
         display="Ligue 1", country="France",
         # Shrank from 20 to 18 clubs for 2023-24.
         format_by_season={2002: (20, 380), 2023: (18, 306)},
+        # Ligue 1 was the only major European league to ABANDON its 2019-20
+        # season rather than resume after the COVID suspension. It was
+        # cancelled in April 2020 after ~28 rounds, with PSG declared
+        # champions on a points-per-game basis. The other four leagues all
+        # resumed and completed, which is why only this one is short.
+        # 279 matches is correct history, not a dropped team.
+        curtailed={2019: "abandoned in April 2020 due to COVID-19"},
     ),
 }
 

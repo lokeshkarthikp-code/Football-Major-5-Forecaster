@@ -119,3 +119,77 @@ class TestMultiLeagueValidation:
 def test_display_names():
     assert display_name("GER-Bundesliga") == "Bundesliga"
     assert display_name("FRA-Ligue 1") == "Ligue 1"
+
+
+class TestNoScrapingDependency:
+    """The project must stay free of browser-automation dependencies.
+
+    soccerdata pulled in seleniumbase -> selenium -> a full browser stack,
+    purely to download CSV files. It registered a pytest plugin, so every
+    test run imported the whole thing; startup went from seconds to
+    minutes. It also added ~200MB to a deploy that only reads parquet.
+
+    This test fails loudly if it ever comes back.
+    """
+
+    def test_soccerdata_not_imported(self):
+        import plfc.fdcouk
+        import plfc.ingest
+        import plfc.names
+        import sys
+        assert "soccerdata" not in sys.modules
+        assert "seleniumbase" not in sys.modules
+        assert "selenium" not in sys.modules
+
+    def test_requirements_free_of_browser_stack(self):
+        from pathlib import Path
+        req = Path(__file__).resolve().parent.parent / "requirements.txt"
+        lines = [
+            l.strip().lower() for l in req.read_text().splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        for banned in ("soccerdata", "selenium", "seleniumbase"):
+            assert not any(l.startswith(banned) for l in lines), \
+                f"{banned} is back in requirements.txt"
+
+
+class TestCurtailedSeasons:
+    """Some seasons genuinely did not finish.
+
+    Ligue 1 abandoned 2019-20 outright after the COVID suspension, while
+    every other major league resumed and completed it. Its 279 matches are
+    correct history, not a dropped team -- and a validator that flags real
+    history as corruption erodes trust just as badly as one that misses
+    real corruption.
+    """
+
+    def test_ligue1_2019_is_marked_curtailed(self):
+        assert config("FRA-Ligue 1").is_curtailed(2019)
+
+    def test_other_leagues_completed_2019(self):
+        """Only Ligue 1 abandoned. The rest resumed behind closed doors."""
+        for lg in ("ENG-Premier League", "ESP-La Liga",
+                   "ITA-Serie A", "GER-Bundesliga"):
+            assert config(lg).is_curtailed(2019) is None
+
+    def test_curtailed_season_passes_validation(self):
+        df = pd.concat([
+            _synth_league("FRA-Ligue 1", 2019, 20, "F").head(279),
+            _synth_league("FRA-Ligue 1", 2021, 20, "F"),
+        ], ignore_index=True)
+        validate_matches(df, allow_partial_season=False)
+
+    def test_name_bug_inside_curtailed_season_still_caught(self):
+        """The exemption must not become a blind spot.
+
+        Match count is skipped for a curtailed season, so team count is the
+        only thing standing between a dropped club and silent corruption.
+        """
+        df = pd.concat([
+            _synth_league("FRA-Ligue 1", 2019, 20, "F").head(279),
+            _synth_league("FRA-Ligue 1", 2021, 20, "F"),
+        ], ignore_index=True)
+        bad = df[~((df.season == 2019)
+                   & ((df.home_team == "F19") | (df.away_team == "F19")))]
+        with pytest.raises(ValidationError, match="19 teams"):
+            validate_matches(bad, allow_partial_season=False)

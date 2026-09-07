@@ -1,11 +1,9 @@
-# Full pipeline: ingestion, modelling, backtesting, and the app.
-# For deploying the Streamlit app alone, use requirements-app.txt instead --
-# it omits soccerdata, which pulls in seleniumbase and a browser stack the
-# app never touches.
 pandas>=2.0
 numpy>=1.24
 scipy>=1.11
-soccerdata>=1.9
+# soccerdata removed -- it pulled in seleniumbase/selenium (a browser stack)
+# purely to fetch plain CSV files. plfc/fdcouk.py reads them with requests.
+# No scraping dependency remains in this project.
 streamlit>=1.30
 pyarrow>=14.0
 requests>=2.31

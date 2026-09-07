@@ -10,7 +10,8 @@ on raw strings, rows silently vanish -- no exception, no warning, just a
 season with 342 matches instead of 380 and a model trained on a hole.
 
 The fix is a canonical registry: every source name maps to one canonical
-id, and ANY name we cannot resolve raises. Silent failure is the enemy;
+id, and ANY name we cannot resolve raises. This is the single place team
+identity is decided -- no library does it for us. Silent failure is the enemy;
 we would rather crash on Wednesday morning than serve wrong predictions
 on Saturday.
 
@@ -40,7 +41,6 @@ __all__ = [
     "TeamNameError",
     "resolve",
     "resolve_series",
-    "write_soccerdata_config",
     "audit_names",
 ]
 
@@ -303,29 +303,6 @@ def resolve_series(values: Iterable[str], *, strict: bool = True):
         )
 
     return s.map(mapping)
-
-
-def write_soccerdata_config(path: Path | None = None) -> Path:
-    """Export the registry to soccerdata's expected config location.
-
-    soccerdata ships with an EMPTY replacement table and reads overrides from
-    ~/soccerdata/config/teamname_replacements.json. Writing our registry there
-    means soccerdata normalises names at the source, before we ever see them,
-    which removes a whole class of join bugs.
-    """
-    path = path or (Path.home() / "soccerdata" / "config" / "teamname_replacements.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    payload: dict[str, list[str]] = {}
-    for canon, aliases in CANONICAL_TEAMS.items():
-        target = _FOLD.get(canon, canon)
-        payload.setdefault(target, [])
-        for a in aliases:
-            if a != target and a not in payload[target]:
-                payload[target].append(a)
-
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf8")
-    return path
 
 
 def audit_names(*frames_and_cols) -> dict[str, list[str]]:

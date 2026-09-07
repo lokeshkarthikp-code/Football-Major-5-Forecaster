@@ -534,6 +534,374 @@ No local machine is involved at any point.
 
 ---
 
+## Part 8: Multi-league expansion (Phase 1)
+
+The Premier League project became the foundation for a wider question:
+whether a shortlist of elite clubs across Europe's top five leagues could
+support a betting strategy. That required four more leagues.
+
+### The validator had to become per-league
+
+The original invariant -- 380 matches, 20 teams -- is Premier League
+specific and wrong for two of the five:
+
+| League | Teams | Matches |
+|---|---|---|
+| Premier League, La Liga, Serie A | 20 | 380 |
+| Bundesliga | 18 | 306 |
+| Ligue 1 (through 2022-23) | 20 | 380 |
+| **Ligue 1 (2023-24 onward)** | **18** | **306** |
+
+Ligue 1 shrank mid-dataset. A single fixed invariant would have flagged
+every season on one side of that line. `plfc/leagues.py` now holds
+season-dependent config, because **a validator that cries wolf gets
+switched off, and a switched-off validator is worse than none.**
+
+### Names got harder
+
+`plfc/names_intl.py` adds ~140 clubs. Football-Data.co.uk abbreviates
+aggressively and inconsistently:
+
+    "Ath Madrid"    Atletico Madrid
+    "Ath Bilbao"    Athletic Bilbao        <- one token apart, different club
+    "Espanol"       Espanyol               <- their spelling, not a typo
+    "M'gladbach"    Borussia Monchengladbach
+    "Ein Frankfurt" Eintracht Frankfurt
+    "Paris SG"      Paris Saint-Germain
+    "Inter"         Internazionale
+    "Milan"         AC Milan               <- and "Inter" is NOT Milan
+
+The dangerous pairs are the point. `Ath Madrid`/`Ath Bilbao`,
+`Inter`/`Milan`, `Real Sociedad`/`Real Madrid`, and the two Borussias are
+each one token apart and genuinely distinct clubs. A fuzzy matcher would
+merge them and corrupt a decade of data with no error raised. There are
+now parametrised tests asserting each pair resolves differently.
+
+### Models fit per league, never pooled
+
+Dixon-Coles estimates strength from a graph of who played whom. Within a
+league every team meets every other twice -- dense, well identified.
+Across leagues, clubs meet only in European competition: a handful of
+matches connecting hundreds of teams. That graph is far too sparse to put
+La Liga and Bundesliga on a common scale, so five leagues means five
+models.
+
+---
+
+## Part 9: Removing the scraping dependency entirely
+
+### The symptom
+
+`pytest` began taking minutes to start, then hanging outright. The
+traceback showed pytest importing **seleniumbase**, which imports
+selenium, which imports websocket.
+
+### The cause
+
+`soccerdata` depends on seleniumbase -- a full browser automation stack --
+and seleniumbase registers itself as a pytest plugin. pytest auto-loads
+every installed plugin at startup, so every test run imported a browser
+stack the tests never touch.
+
+It cost three ways: glacial test startup, ~200MB on a Streamlit deploy
+that only reads parquet, and a scraping dependency for data that is not
+scraped.
+
+### The fix
+
+Football-Data.co.uk publishes **plain CSV at stable URLs**:
+
+    https://www.football-data.co.uk/mmz4281/{season}/{div}.csv
+
+`plfc/fdcouk.py` downloads them with `requests` and parses with pandas.
+No browser, no selenium, no scraper. ClubElo was dropped at the same time
+-- it fed nothing into the model and its server had been down for hours.
+
+**There is now no scraping anywhere in this project.** Two regression
+tests assert `soccerdata`, `selenium` and `seleniumbase` appear in neither
+`sys.modules` nor `requirements.txt`.
+
+### Three data traps this surfaced
+
+**1. Day-first dates.** Football-Data.co.uk writes `dd/mm/yy` in older
+files and `dd/mm/yyyy` in newer ones. Both are day-first, which pandas
+does NOT assume: `03/04/2024` silently parses as 4 March instead of
+3 April. Every date parses with `dayfirst=True`, and a range check raises
+if parsed dates fall outside the season they claim to belong to.
+
+**2. HTML served with a 200.** A struggling server often returns an error
+page with a success status. Without a guard, pandas would parse
+`<!DOCTYPE html>` as data and produce garbage rows that pass validation.
+The downloader now sniffs the first bytes and rejects anything HTML-shaped.
+This mattered within days -- see below.
+
+**3. Outages.** Downloads retry on 5xx with exponential backoff, and fall
+back to a stale cached copy rather than failing outright. Last week's data
+beats no data on an unattended Wednesday run. 404 is not retried: a
+missing season will still be missing in eight seconds.
+
+### The outage
+
+Immediately after this work, football-data.co.uk began returning HTTP 503
+across every league and season -- confirmed via curl, browser, and a
+second device. Their nginx error page is exactly the HTML-with-200 case
+the parser now guards against.
+
+**The multi-league ingest has therefore not yet run.** Phase 1 is built
+and tested (100 tests passing) but has only been exercised against
+synthetic data for the four new leagues. The existing Premier League
+parquet is unaffected, so the app and everything downstream still works.
+
+---
+
+## Part 10: The betting strategy investigation
+
+A side thread that produced real findings and shaped Phase 2.
+
+### The original proposal
+
+Bet elite clubs (Real Madrid, Barcelona, Bayern, PSG, Arsenal, Man City,
+Inter) as singles each week, parlay the same teams together, and add one
+"upset" pick. Small stakes, many combinations, aiming to profit whenever
+only one or two teams slip.
+
+### What the maths said
+
+**Parlays multiply the bookmaker's margin, they do not average it.** At a
+typical 5% overround, four legs compound to ~22%.
+
+**They are the opposite of risk reduction.** Four legs at 75% each: the
+parlay loses 68.4% of the time. The same four picks as singles lose
+everything only 0.39% of the time. Identical selections; the parlay turns
+a 0.4% chance of total loss into 68%.
+
+**Correlated exposure.** Betting Barcelona as a single *and* in the parlay
+means one Barcelona defeat kills both. That is the same result purchased
+twice, not diversification.
+
+**Simulating the exact proposal** (3 singles + parlay of those three +
+one upset, over a 38-week season): median −10 units, profitable 24% of
+the time. Dropping just the parlay raised that to 34% -- the component
+added *for* risk reduction was the most expensive part.
+
+**Stake size does not change EV.** Betting $5 instead of $50 changes the
+absolute loss, not the −15.3% expected return. Smaller stakes make a
+strategy affordable, not profitable.
+
+**Structure cannot change the mean.** The EV of a set of parlays is the
+sum of each parlay's EV. Combination structure changes variance only. No
+arrangement of negative-EV legs becomes positive.
+
+### Where the argument turned
+
+Two corrections, both from the user, both right:
+
+**1. Fixture filtering was missing from the simulations.** Betting every
+shortlisted team every week -- including Barcelona away at the Bernabeu --
+is not the strategy. Selecting only favourable fixtures lifts the per-leg
+win rate from a season average of ~68% toward 85-90%.
+
+**2. Parlays amplify edge in BOTH directions.** Four legs at −5% each give
+−18.5%. Four legs at **+5%** each give **+21.6%**. Parlays are not
+inherently bad; they are a multiplier. The entire question is the sign of
+the legs.
+
+### The resulting position
+
+The structure is sound *conditional on the legs having positive edge*.
+That is an empirical question, and Phase 2 exists to answer it.
+
+The honest prior: the Premier League backtest showed the model losing to
+the closing line (Brier 0.5853 vs 0.5749). But that was aggregate
+performance across all matches, not performance on the narrow subset of
+short-priced elite favourites. Published evidence suggests favourites are
+systematically better priced than longshots, so this niche may behave
+differently from the market as a whole. Worth measuring.
+
+**If the backtest says the edge is not there, the answer is that the
+strategy does not work -- not that we need different parlay combinations.**
+
+### Win-rate calibration
+
+A proposed 75% floor for the shortlist would have excluded Arsenal (who
+won the league at 68.4%) and Real Madrid (71.1%). Only Barcelona cleared
+it. Elite seasons realistically land 65-75%; exceptional ones reach 84%.
+The floor was set to 60%, with the top-8 ranking doing the actual
+selection.
+
+This surfaced a useful distinction:
+
+- **Season win rate** selects *teams*. Barcelona's 81.6% includes away
+  trips to Real Madrid.
+- **Per-match probability** selects *bets*. Barcelona at home to a
+  bottom-half side is closer to 88-92%.
+
+You never bet a team's whole season. The per-fixture model does the real
+work.
+
+### The correct-score finding
+
+A proposed alternative: back the exact scoreline on ~10 matches a week at
++500, needing 2 hits from 10 to profit.
+
+The model answers this directly. Across 200 fixtures the **modal scoreline
+carries a median 12.4% probability** (range 7.6% to 23.7%).
+
+| Hits from 10 | Probability | Profit on $100 |
+|---|---|---|
+| 0 | 26.7% | −$100 |
+| 1 | 37.7% | −$40 |
+| 2 | 23.9% | +$20 |
+| 3+ | 11.7% | +$80 or more |
+
+P(2 or more) = 35.6%. **EV = −25.8%.**
+
+A 12.4% shot is worth **+708**; +500 is offered. Correct-score carries
+15-30% overround against ~5% on the 1X2 market -- it is priced that way
+precisely because it looks attractive.
+
+One caveat worth testing: the most predictable fixture in the sample sat
+at 23.7%, where +500 would be +42% EV. If bookmakers apply a flat fat
+margin to all correct-score markets regardless of how concentrated the
+true distribution is, edge might exist specifically there. Phase 2 adds
+correct-score to the edge buckets to find out.
+
+---
+
+## Part 11: Where things stand
+
+**Complete and running in production:**
+
+- Premier League pipeline: ingest, model, walk-forward backtest, ledger
+- Deployed on Streamlit Community Cloud
+- GitHub Action refreshing data and settling predictions every Wednesday
+- 100 tests passing, network-free
+
+**Built but not yet run against real data:**
+
+- Multi-league ingestion for La Liga, Serie A, Bundesliga, Ligue 1
+- Per-league validator config
+- ~140 new clubs in the name registry (written from known conventions,
+  **not yet verified against the live feed** -- run
+  `python scripts/audit_leagues.py` when the site recovers)
+
+**Blocked on football-data.co.uk returning HTTP 503.**
+
+**Not started: Phase 2 and Phase 3.** See the checklist below.
+
+---
+
+## Phase 2 and 3 build checklist
+
+### Phase 2: The case study
+
+**Team selection (rolling, no hindsight)**
+
+- [ ] Rolling 3-season weighted win rate, weights 3:2:1 toward most recent
+- [ ] Win rate, not points-per-game -- draws pay nothing on a moneyline
+- [ ] Top 8 globally across leagues, 60% floor
+- [ ] Tier 2 (prior top 6) for the second, higher-risk layer
+- [ ] Shortlist recomputed each season from **prior seasons only**
+- [ ] Sanity check: does the 2025-26 shortlist roughly match the user's
+      list (Real Madrid, Barcelona, Atletico, Bayern, PSG, Arsenal,
+      Man City, Inter)?
+
+**Fixture filtering -- the key correction**
+
+- [ ] Frequency table built on **filtered** legs, not every shortlisted
+      team's every match
+- [ ] Model probability per fixture, walk-forward (fit strictly before
+      match date)
+- [ ] Threshold as a **variable**: 75/80/85/90% swept, not fixed
+- [ ] Report how many weeks yield zero qualifying legs
+
+**The core tables**
+
+- [ ] Legs failing (0 / 1 / 2 / 3+) x frequency, per threshold
+- [ ] Same table with **real historical closing odds** -> actual P&L
+- [ ] Year-by-year breakdown -- does it work every season, or does one
+      year carry it?
+- [ ] Parlay pricing computed properly, not assumed to multiply cleanly
+
+**The test that decides it**
+
+- [ ] Model probability vs market implied vs **observed frequency**, per
+      threshold bucket
+- [ ] Confidence intervals; sample shrinks fast at 90%
+- [ ] CLV framing
+- [ ] Kelly / risk-of-ruin simulator (returns "stake zero" on negative edge)
+
+**Mispricing detector (live tool)**
+
+- [ ] Per fixture: model probability vs de-vigged market probability
+- [ ] **Edge = model_prob x decimal_odds − 1**, not the raw probability gap
+- [ ] De-vig properly; raw implied probabilities sum to >1
+- [ ] Rank current fixtures by edge, flag largest positive gaps
+- [ ] Show both directions -- where the model is more confident than the
+      market (candidate value) and where it is less (avoid, even for an
+      elite team)
+- [ ] Kelly stake per flagged bet, and the honest zero on negative edge
+- [ ] Feed flagged bets into the ledger so CLV accumulates
+
+**Historical validation of the detector**
+
+- [ ] Bucket every past match by edge size (0-2%, 2-5%, 5-10%, 10%+)
+- [ ] Per bucket: did flagged bets win more often than the price implied?
+- [ ] Realised ROI per bucket with confidence intervals
+- [ ] **The null result matters**: if high-edge flags do not outperform,
+      the model is wrong where it disagrees, and that is the finding
+- [ ] Split favourite vs longshot
+- [ ] Include correct-score markets in the buckets (see Part 10)
+
+**Exact-score diagnostic**
+
+- [ ] Counter: how many fixtures per week the model calls on the exact
+      scoreline
+- [ ] Compare observed hit rate against the model's own claimed modal
+      probability -- a test of whether the goal distribution is well
+      specified, not just the outcome probabilities
+
+**Kane / Mbappe sub-analysis**
+
+- [ ] Goalscorer data -- **no source in the current pipeline has it**;
+      hand-entered CSV is the recommended route (~100 league matches each)
+- [ ] League games only; matches scored in + team result
+- [ ] Gameweeks where **both** scored and **both** teams won
+- [ ] Labelled descriptive -- no odds exist for these markets, so
+      frequency only, no P&L
+- [ ] Note small sample: Kane at Bayern from 2023, Mbappe at Madrid
+      from 2024
+
+### Phase 3: Streamlit rebuild
+
+- [ ] Landing page as title screen with case study entry point
+- [ ] Left sidebar navigation: one entry per league + betting tab
+- [ ] Each league page keeps current views (fixtures, ratings, backtest,
+      track record)
+- [ ] Betting tab: frequency tables, threshold slider, P&L, mispricing flags
+- [ ] Case study view with charts and hypothesis tests
+
+### Known constraints
+
+- No Champions League odds anywhere free -- CL can enter upset frequency,
+  never the mispricing test
+- No player-market odds -- Kane/Mbappe stays descriptive
+- Refitting is NOT learning from errors; calibration feedback is unbuilt
+  (possible Phase 4)
+- Combination structure changes variance, never the mean
+
+### One warning to carry forward
+
+xi = 0.0018 was chosen by judgment **before** any results were seen, which
+is what makes the reported backtest a clean out-of-sample estimate. If the
+decay sweep is run and the winning value's Brier is quoted as the headline,
+that number is optimistically biased -- a hyperparameter selected on the
+same data used to report performance. Either keep reporting the untuned
+figures and describe the sweep as sensitivity analysis, or hold out the
+most recent season for a clean final evaluation.
+
+---
+
 ## Appendix: how to talk about this
 
 **Lead with methodology, not accuracy.** The strongest claims are: diagnosing

@@ -9,10 +9,16 @@ we raise here rather than let a bad row reach the model.
 
 Sources
 -------
-Football-Data.co.uk (via soccerdata.MatchHistory)
+Football-Data.co.uk (via plfc.fdcouk)
     Results + closing betting odds, back to the 1990s. The odds are our
     benchmark: beating the closing line is the honest bar for "is this
     model any good", far more informative than raw accuracy.
+
+    Read directly as CSV. We previously used soccerdata for this, but it
+    depends on seleniumbase -- a full browser automation stack that made
+    test startup glacial and bloated deploys by ~200MB, all to fetch files
+    that are plain CSV at stable URLs. No scraping is involved anywhere in
+    this project now.
 
 football-data.org (via plfc.footballdata)
     Fixture schedule for the current season, including unplayed matches.
@@ -20,10 +26,6 @@ football-data.org (via plfc.footballdata)
     with a token -- replaced the FBref scraper, which was the one genuinely
     fragile source. Free tier has no odds and no match stats; we need
     neither here.
-
-ClubElo (via soccerdata.ClubElo)
-    Optional. Pre-computed strength ratings by date -- a strong baseline
-    and a useful cold-start prior for promoted teams.
 
 Caching
 -------
@@ -41,7 +43,8 @@ from pathlib import Path
 import pandas as pd
 
 from .leagues import DEFAULT_LEAGUES, LEAGUES, config
-from .names import resolve_series, write_soccerdata_config
+from .fdcouk import read_games
+from .names import resolve_series
 
 log = logging.getLogger(__name__)
 
@@ -126,8 +129,10 @@ def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> 
             problems.append(f"  {league}: unknown league key")
             continue
 
-        exp_teams, exp_matches = config(league).expected(int(season))
+        cfg = config(league)
+        exp_teams, exp_matches = cfg.expected(int(season))
         n_teams = len(set(grp["home_team"]) | set(grp["away_team"]))
+        curtailed = cfg.is_curtailed(int(season))
 
         played = grp.dropna(subset=RESULT_COLS) if all(
             c in grp.columns for c in RESULT_COLS
@@ -144,6 +149,14 @@ def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> 
             problems.append(
                 f"  {league} {season}: {n_teams} teams (expected {exp_teams})"
             )
+
+        if curtailed:
+            # Known-incomplete season. The team count above still applies --
+            # a name-join bug inside a curtailed season must not hide behind
+            # the exemption -- but the match count legitimately falls short.
+            log.info("%s %s: %d matches, season %s (expected short).",
+                     league, season, len(played), curtailed)
+            continue
 
         if len(played) != exp_matches:
             hint = "likely a dropped team from a bad name join"
@@ -168,75 +181,30 @@ def validate_matches(df: pd.DataFrame, *, allow_partial_season: bool = True) -> 
 # Pulls
 # ---------------------------------------------------------------------------
 
-def _seasons_as_strings(seasons: list[int]) -> list[str]:
-    """soccerdata wants '1516' style season codes."""
-    return [f"{s % 100:02d}{(s + 1) % 100:02d}" for s in seasons]
-
-
-def _season_code_to_year(codes: pd.Series) -> pd.Series:
-    """Convert soccerdata's '1920' season codes to the start year (2019).
-
-    Authoritative, unlike inferring the season from a match date. Seasons do
-    not always run Aug->May: the 2019/20 campaign was suspended in March 2020
-    and finished on 26 July 2020, so any "month >= 7 means a new season" rule
-    files those final matchweeks under the wrong campaign. The source already
-    knows which season a match belongs to -- use that.
-    """
-    def one(c):
-        s = str(c).strip()
-        if len(s) == 4 and s.isdigit():
-            start = int(s[:2])
-            return 2000 + start if start < 90 else 1900 + start
-        return pd.NA
-
-    return codes.map(one).astype("Int64")
-
-
 def fetch_results(seasons: list[int] | None = None,
                   leagues: list[str] | None = None) -> pd.DataFrame:
-    """Historical results + closing odds from Football-Data.co.uk.
-
-    Pulls all requested leagues in one call. soccerdata returns a table
-    indexed by (league, season, game), so the league comes back with the
-    data rather than needing to be stitched on afterwards.
-    """
-    import soccerdata as sd
-
-    write_soccerdata_config()          # normalise names at the source
+    """Historical results + closing odds from Football-Data.co.uk CSVs."""
     seasons = seasons or season_range(10)
     leagues = leagues or DEFAULT_LEAGUES
 
-    mh = sd.MatchHistory(leagues=leagues, seasons=_seasons_as_strings(seasons))
-    raw = mh.read_games().reset_index()
+    divisions = {lg: config(lg).code for lg in leagues}
+    raw = read_games(divisions, seasons)
 
     df = pd.DataFrame({
-        "date": pd.to_datetime(raw["date"], errors="coerce"),
+        "date": raw["date"],
         "league": raw["league"],
-        "home_team": resolve_series(raw["home_team"]),
-        "away_team": resolve_series(raw["away_team"]),
-        "home_goals": pd.to_numeric(raw.get("FTHG"), errors="coerce"),
-        "away_goals": pd.to_numeric(raw.get("FTAG"), errors="coerce"),
+        "season": pd.to_numeric(raw["season"], errors="coerce").astype("Int64"),
+        "home_team": resolve_series(raw["home_team_raw"]),
+        "away_team": resolve_series(raw["away_team_raw"]),
+        "home_goals": raw["home_goals"],
+        "away_goals": raw["away_goals"],
     })
+    for c in ("odds_home", "odds_draw", "odds_away"):
+        if c in raw.columns:
+            df[c] = raw[c]
 
-    # Closing odds. Bet365 is the most consistently populated across leagues
-    # and seasons; these are the benchmark the whole evaluation rests on.
-    for src, dst in [("B365H", "odds_home"), ("B365D", "odds_draw"),
-                     ("B365A", "odds_away")]:
-        if src in raw.columns:
-            df[dst] = pd.to_numeric(raw[src], errors="coerce")
-
-    # Season comes from the source's own key, never a date heuristic --
-    # see _season_code_to_year for why (COVID broke the Aug->May assumption).
-    if "season" in raw.columns:
-        df["season"] = _season_code_to_year(raw["season"])
-    else:
-        log.warning("No season column in source; falling back to date heuristic.")
-        df["season"] = df["date"].map(
-            lambda d: current_season(d) if pd.notna(d) else pd.NA
-        ).astype("Int64")
-
-    df = df.dropna(subset=["date", "season"]).sort_values("date").reset_index(drop=True)
-    return df
+    return (df.dropna(subset=["date", "season"])
+              .sort_values("date").reset_index(drop=True))
 
 
 def fetch_schedule(season: int | None = None,
@@ -279,38 +247,17 @@ def fetch_schedule(season: int | None = None,
     return df.sort_values("date").reset_index(drop=True)
 
 
-def fetch_elo(as_of: str | datetime | None = None) -> pd.DataFrame:
-    """ClubElo ratings snapshot. Optional -- used as baseline and cold-start prior."""
-    import soccerdata as sd
-
-    write_soccerdata_config()
-    as_of = as_of or datetime.now(timezone.utc).date().isoformat()
-    if isinstance(as_of, datetime):
-        as_of = as_of.date().isoformat()
-
-    elo = sd.ClubElo()
-    raw = elo.read_by_date(as_of).reset_index()
-
-    raw["team"] = resolve_series(raw["team"], strict=False)
-    out = raw.dropna(subset=["team"])[["team", "elo"]]
-    return out.reset_index(drop=True)
-
-
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def refresh(n_seasons: int = 10, *, leagues: list[str] | None = None,
-            include_elo: bool = False) -> pd.DataFrame:
+def refresh(n_seasons: int = 10, *, leagues: list[str] | None = None) -> pd.DataFrame:
     """Full weekly refresh across all leagues. Pull -> validate -> cache.
 
     Safe to run repeatedly. The parquet is only overwritten after validation
     passes, so a failed run leaves the previous good dataset intact.
 
-    include_elo defaults to False: ClubElo is an optional baseline that feeds
-    nothing into the model, and its server has been unreliable. Its retry
-    loop was most of the run time for no benefit.
-    """
+"""
     leagues = leagues or DEFAULT_LEAGUES
     log.info("Refreshing %d league(s), %d seasons...", len(leagues), n_seasons)
 
@@ -339,12 +286,6 @@ def refresh(n_seasons: int = 10, *, leagues: list[str] | None = None,
 
     results.to_parquet(DATA / "matches.parquet", index=False)
     fixtures.to_parquet(DATA / "fixtures.parquet", index=False)
-
-    if include_elo:
-        try:
-            fetch_elo().to_parquet(DATA / "elo.parquet", index=False)
-        except Exception as exc:                  # noqa: BLE001
-            log.warning("Elo fetch failed (%s) -- non-fatal.", exc)
 
     (DATA / "LAST_REFRESH").write_text(stamp)
 

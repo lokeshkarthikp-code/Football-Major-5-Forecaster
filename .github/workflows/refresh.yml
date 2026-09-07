@@ -6,6 +6,12 @@ on:
     - cron: "0 6 * * 3"
   workflow_dispatch:        # lets you trigger a refresh by hand
 
+# Explicit write permission so the job can commit refreshed data back.
+# Setting it here is more robust than relying on a repo-level setting that
+# is easy to forget when the repo is cloned or transferred.
+permissions:
+  contents: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -20,14 +26,14 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
-      # Keeps soccerdata's HTTP cache between runs so we only re-download
-      # what changed from the CSV feed.
-      - name: Restore scraper cache
+      # Completed seasons never change, so caching the raw CSVs means only
+      # the current season is re-downloaded each week.
+      - name: Restore CSV cache
         uses: actions/cache@v4
         with:
-          path: ~/soccerdata
-          key: soccerdata-${{ github.run_id }}
-          restore-keys: soccerdata-
+          path: data/raw
+          key: fdcouk-${{ github.run_id }}
+          restore-keys: fdcouk-
 
       - name: Refresh data
         env:
