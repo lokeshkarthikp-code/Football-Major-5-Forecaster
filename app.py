@@ -71,6 +71,22 @@ def _pct(x: float) -> str:
     return f"{x * 100:.0f}%"
 
 
+def _result_from_score(score: str) -> str | None:
+    """Read win/draw/loss off a 'H-A' scoreline string.
+
+    The model has two opinions about every match: the argmax of its
+    win/draw/away vector, and the single most likely scoreline. They
+    disagree often -- a draw probability rarely leads the vector, while
+    1-1 is frequently the most likely cell -- so both are worth tracking.
+    """
+    try:
+        h, a = str(score).split("-")
+        h, a = int(h), int(a)
+    except (ValueError, AttributeError):
+        return None
+    return "home_win" if h > a else "away_win" if h < a else "draw"
+
+
 def _score_str(hg, ag) -> str:
     if pd.isna(hg) or pd.isna(ag):
         return ""
@@ -266,6 +282,10 @@ here is expected rather than a fault.
             settled["score_hit"] = (
                 settled["likely_score"].astype(str) == settled["actual_score"]
             )
+            settled["score_result"] = settled["likely_score"].map(_result_from_score)
+            settled["score_result_hit"] = (
+                settled["score_result"] == settled["actual"]
+            )
             settled["week_start"] = (
                 settled["match_date"] - pd.to_timedelta(
                     settled["match_date"].dt.weekday, unit="D")
@@ -274,14 +294,25 @@ here is expected rather than a fault.
             n = len(settled)
             n_res = int(settled["result_hit"].sum())
             n_scr = int(settled["score_hit"].sum())
+            n_sr = int(settled["score_result_hit"].sum())
 
             st.markdown("#### Running totals")
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Predictions settled", n)
             c2.metric("Result correct", f"{n_res} / {n}",
                       delta=f"{n_res / n:.0%}", delta_color="off")
-            c3.metric("Exact score correct", f"{n_scr} / {n}",
+            c3.metric("Scoreline's result correct", f"{n_sr} / {n}",
+                      delta=f"{n_sr / n:.0%}", delta_color="off")
+            c4.metric("Exact score correct", f"{n_scr} / {n}",
                       delta=f"{n_scr / n:.0%}", delta_color="off")
+
+            st.caption(
+                "**Result** is the model's highest-probability outcome. "
+                "**Scoreline's result** reads win/draw/loss off the most "
+                "likely scoreline instead — 2-0 counts as a home win even "
+                "if the match finished 2-1. **Exact score** needs the "
+                "scoreline itself to be right."
+            )
 
             if n < 50:
                 st.warning(
@@ -296,12 +327,16 @@ here is expected rather than a fault.
                 settled.groupby("week_start")
                 .agg(predictions=("result_hit", "size"),
                      result_correct=("result_hit", "sum"),
+                     sr_correct=("score_result_hit", "sum"),
                      score_correct=("score_hit", "sum"))
                 .reset_index()
                 .sort_values("week_start", ascending=False)
             )
             weekly["result_%"] = (
                 weekly["result_correct"] / weekly["predictions"]
+            ).map("{:.0%}".format)
+            weekly["sr_%"] = (
+                weekly["sr_correct"] / weekly["predictions"]
             ).map("{:.0%}".format)
             weekly["score_%"] = (
                 weekly["score_correct"] / weekly["predictions"]
@@ -311,13 +346,14 @@ here is expected rather than a fault.
             st.markdown("#### Week by week")
             st.dataframe(
                 weekly[["week", "predictions", "result_correct", "result_%",
-                        "score_correct", "score_%"]],
+                        "sr_correct", "sr_%", "score_correct", "score_%"]],
                 use_container_width=True, hide_index=True,
             )
 
             cols = ["match_date", "home_team", "away_team", "home_win", "draw",
-                    "away_win", "predicted", "likely_score", "actual_score",
-                    "actual", "result_hit", "score_hit"]
+                    "away_win", "predicted", "likely_score", "score_result",
+                    "actual_score", "actual", "result_hit", "score_result_hit",
+                    "score_hit"]
 
             with st.expander(f"Every settled prediction ({n} matches)"):
                 st.dataframe(
@@ -330,10 +366,13 @@ here is expected rather than a fault.
                 for wk in weekly["week_start"]:
                     grp = settled[settled["week_start"] == wk]
                     hits = int(grp["result_hit"].sum())
+                    srh = int(grp["score_result_hit"].sum())
                     scr = int(grp["score_hit"].sum())
                     st.markdown(
                         f"**{wk.strftime('w/c %d %b %Y')}** — "
-                        f"{hits}/{len(grp)} results, {scr}/{len(grp)} exact scores"
+                        f"{hits}/{len(grp)} results, "
+                        f"{srh}/{len(grp)} scoreline results, "
+                        f"{scr}/{len(grp)} exact scores"
                     )
                     st.dataframe(
                         grp[cols].sort_values("match_date").round(3),
@@ -356,6 +395,25 @@ here is expected rather than a fault.
                     st.dataframe(
                         miss[cols + ["p_assigned"]]
                         .sort_values("p_assigned").round(3),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            with st.expander("Where the two routes disagreed"):
+                dis = settled[settled["predicted"] != settled["score_result"]]
+                if dis.empty:
+                    st.info("The two routes agreed on every settled match.")
+                else:
+                    a = int(dis["result_hit"].sum())
+                    b = int(dis["score_result_hit"].sum())
+                    st.markdown(
+                        f"{len(dis)} match(es) where the highest-probability "
+                        f"outcome and the most likely scoreline pointed "
+                        f"different ways. Result route right {a}, "
+                        f"scoreline route right {b}."
+                    )
+                    st.dataframe(
+                        dis[cols].sort_values("match_date", ascending=False)
+                        .round(3),
                         use_container_width=True, hide_index=True,
                     )
 

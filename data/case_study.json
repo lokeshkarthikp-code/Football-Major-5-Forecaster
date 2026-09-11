@@ -1,0 +1,715 @@
+{
+  "built_at": "2026-09-08T05:43:32.440164+00:00",
+  "scope": {
+    "matches": 16210,
+    "leagues": 5,
+    "seasons": 10,
+    "backtest_predictions": 12413
+  },
+  "brier_by_league": [
+    {
+      "league": "Bundesliga",
+      "Base rates only": 0.6494,
+      "Bookmaker closing line": 0.5772,
+      "Dixon-Coles": 0.5931
+    },
+    {
+      "league": "La Liga",
+      "Base rates only": 0.6454,
+      "Bookmaker closing line": 0.5773,
+      "Dixon-Coles": 0.5875
+    },
+    {
+      "league": "Ligue 1",
+      "Base rates only": 0.6501,
+      "Bookmaker closing line": 0.5888,
+      "Dixon-Coles": 0.6019
+    },
+    {
+      "league": "Premier League",
+      "Base rates only": 0.6469,
+      "Bookmaker closing line": 0.5749,
+      "Dixon-Coles": 0.5853
+    },
+    {
+      "league": "Serie A",
+      "Base rates only": 0.6562,
+      "Bookmaker closing line": 0.5725,
+      "Dixon-Coles": 0.5838
+    }
+  ],
+  "edge_share": [
+    {
+      "league": "Premier League",
+      "share_of_market_edge": 0.8553
+    },
+    {
+      "league": "La Liga",
+      "share_of_market_edge": 0.8497
+    },
+    {
+      "league": "Ligue 1",
+      "share_of_market_edge": 0.7863
+    },
+    {
+      "league": "Bundesliga",
+      "share_of_market_edge": 0.7808
+    },
+    {
+      "league": "Serie A",
+      "share_of_market_edge": 0.865
+    },
+    {
+      "league": "ALL (reference only)",
+      "share_of_market_edge": 0.835
+    }
+  ],
+  "tier_table": [
+    {
+      "as_of_season": 2020,
+      "threshold": 0.55,
+      "n_teams": 11,
+      "teams": "Paris Saint-Germain, Liverpool, Manchester City, Bayern Munich, Juventus, Barcelona, Real Madrid, Borussia Dortmund, Inter Milan, Napoli, Lazio"
+    },
+    {
+      "as_of_season": 2020,
+      "threshold": 0.6,
+      "n_teams": 8,
+      "teams": "Paris Saint-Germain, Liverpool, Manchester City, Bayern Munich, Juventus, Barcelona, Real Madrid, Borussia Dortmund"
+    },
+    {
+      "as_of_season": 2020,
+      "threshold": 0.65,
+      "n_teams": 6,
+      "teams": "Paris Saint-Germain, Liverpool, Manchester City, Bayern Munich, Juventus, Barcelona"
+    },
+    {
+      "as_of_season": 2020,
+      "threshold": 0.7,
+      "n_teams": 5,
+      "teams": "Paris Saint-Germain, Liverpool, Manchester City, Bayern Munich, Juventus"
+    },
+    {
+      "as_of_season": 2020,
+      "threshold": 0.75,
+      "n_teams": 4,
+      "teams": "Paris Saint-Germain, Liverpool, Manchester City, Bayern Munich"
+    },
+    {
+      "as_of_season": 2021,
+      "threshold": 0.55,
+      "n_teams": 16,
+      "teams": "Paris Saint-Germain, Bayern Munich, Manchester City, Liverpool, Inter Milan, Juventus, Real Madrid, Barcelona, Borussia Dortmund, Atletico Madrid, Atalanta, Lille, Napoli, AC Milan, Lazio, Sevilla"
+    },
+    {
+      "as_of_season": 2021,
+      "threshold": 0.6,
+      "n_teams": 9,
+      "teams": "Paris Saint-Germain, Bayern Munich, Manchester City, Liverpool, Inter Milan, Juventus, Real Madrid, Barcelona, Borussia Dortmund"
+    },
+    {
+      "as_of_season": 2021,
+      "threshold": 0.65,
+      "n_teams": 6,
+      "teams": "Paris Saint-Germain, Bayern Munich, Manchester City, Liverpool, Inter Milan, Juventus"
+    },
+    {
+      "as_of_season": 2021,
+      "threshold": 0.7,
+      "n_teams": 3,
+      "teams": "Paris Saint-Germain, Bayern Munich, Manchester City"
+    },
+    {
+      "as_of_season": 2021,
+      "threshold": 0.75,
+      "n_teams": 0,
+      "teams": ""
+    },
+    {
+      "as_of_season": 2022,
+      "threshold": 0.55,
+      "n_teams": 12,
+      "teams": "Manchester City, Bayern Munich, Paris Saint-Germain, Liverpool, Inter Milan, Real Madrid, AC Milan, Borussia Dortmund, Napoli, Barcelona, Atletico Madrid, Juventus"
+    },
+    {
+      "as_of_season": 2022,
+      "threshold": 0.6,
+      "n_teams": 9,
+      "teams": "Manchester City, Bayern Munich, Paris Saint-Germain, Liverpool, Inter Milan, Real Madrid, AC Milan, Borussia Dortmund, Napoli"
+    },
+    {
+      "as_of_season": 2022,
+      "threshold": 0.65,
+      "n_teams": 6,
+      "teams": "Manchester City, Bayern Munich, Paris Saint-Germain, Liverpool, Inter Milan, Real Madrid"
+    },
+    {
+      "as_of_season": 2022,
+      "threshold": 0.7,
+      "n_teams": 3,
+      "teams": "Manchester City, Bayern Munich, Paris Saint-Germain"
+    },
+    {
+      "as_of_season": 2022,
+      "threshold": 0.75,
+      "n_teams": 0,
+      "teams": ""
+    },
+    {
+      "as_of_season": 2023,
+      "threshold": 0.55,
+      "n_teams": 14,
+      "teams": "Manchester City, Paris Saint-Germain, Napoli, Bayern Munich, Barcelona, Real Madrid, Inter Milan, Borussia Dortmund, Arsenal, Atletico Madrid, AC Milan, Liverpool, Juventus, RB Leipzig"
+    },
+    {
+      "as_of_season": 2023,
+      "threshold": 0.6,
+      "n_teams": 10,
+      "teams": "Manchester City, Paris Saint-Germain, Napoli, Bayern Munich, Barcelona, Real Madrid, Inter Milan, Borussia Dortmund, Arsenal, Atletico Madrid"
+    },
+    {
+      "as_of_season": 2023,
+      "threshold": 0.65,
+      "n_teams": 6,
+      "teams": "Manchester City, Paris Saint-Germain, Napoli, Bayern Munich, Barcelona, Real Madrid"
+    },
+    {
+      "as_of_season": 2023,
+      "threshold": 0.7,
+      "n_teams": 1,
+      "teams": "Manchester City"
+    },
+    {
+      "as_of_season": 2023,
+      "threshold": 0.75,
+      "n_teams": 0,
+      "teams": ""
+    },
+    {
+      "as_of_season": 2024,
+      "threshold": 0.55,
+      "n_teams": 13,
+      "teams": "Manchester City, Real Madrid, Arsenal, Inter Milan, Barcelona, Paris Saint-Germain, Bayern Munich, Bayer Leverkusen, Atletico Madrid, Liverpool, Borussia Dortmund, AC Milan, RB Leipzig"
+    },
+    {
+      "as_of_season": 2024,
+      "threshold": 0.6,
+      "n_teams": 10,
+      "teams": "Manchester City, Real Madrid, Arsenal, Inter Milan, Barcelona, Paris Saint-Germain, Bayern Munich, Bayer Leverkusen, Atletico Madrid, Liverpool"
+    },
+    {
+      "as_of_season": 2024,
+      "threshold": 0.65,
+      "n_teams": 7,
+      "teams": "Manchester City, Real Madrid, Arsenal, Inter Milan, Barcelona, Paris Saint-Germain, Bayern Munich"
+    },
+    {
+      "as_of_season": 2024,
+      "threshold": 0.7,
+      "n_teams": 2,
+      "teams": "Manchester City, Real Madrid"
+    },
+    {
+      "as_of_season": 2024,
+      "threshold": 0.75,
+      "n_teams": 0,
+      "teams": ""
+    },
+    {
+      "as_of_season": 2025,
+      "threshold": 0.55,
+      "n_teams": 12,
+      "teams": "Barcelona, Paris Saint-Germain, Real Madrid, Bayern Munich, Inter Milan, Manchester City, Arsenal, Liverpool, Bayer Leverkusen, Atletico Madrid, Atalanta, Napoli"
+    },
+    {
+      "as_of_season": 2025,
+      "threshold": 0.6,
+      "n_teams": 10,
+      "teams": "Barcelona, Paris Saint-Germain, Real Madrid, Bayern Munich, Inter Milan, Manchester City, Arsenal, Liverpool, Bayer Leverkusen, Atletico Madrid"
+    },
+    {
+      "as_of_season": 2025,
+      "threshold": 0.65,
+      "n_teams": 5,
+      "teams": "Barcelona, Paris Saint-Germain, Real Madrid, Bayern Munich, Inter Milan"
+    },
+    {
+      "as_of_season": 2025,
+      "threshold": 0.7,
+      "n_teams": 3,
+      "teams": "Barcelona, Paris Saint-Germain, Real Madrid"
+    },
+    {
+      "as_of_season": 2025,
+      "threshold": 0.75,
+      "n_teams": 0,
+      "teams": ""
+    },
+    {
+      "as_of_season": 2026,
+      "threshold": 0.55,
+      "n_teams": 12,
+      "teams": "Bayern Munich, Barcelona, Paris Saint-Germain, Real Madrid, Inter Milan, Arsenal, Manchester City, Borussia Dortmund, Atletico Madrid, Bayer Leverkusen, Napoli, Roma"
+    },
+    {
+      "as_of_season": 2026,
+      "threshold": 0.6,
+      "n_teams": 7,
+      "teams": "Bayern Munich, Barcelona, Paris Saint-Germain, Real Madrid, Inter Milan, Arsenal, Manchester City"
+    },
+    {
+      "as_of_season": 2026,
+      "threshold": 0.65,
+      "n_teams": 5,
+      "teams": "Bayern Munich, Barcelona, Paris Saint-Germain, Real Madrid, Inter Milan"
+    },
+    {
+      "as_of_season": 2026,
+      "threshold": 0.7,
+      "n_teams": 4,
+      "teams": "Bayern Munich, Barcelona, Paris Saint-Germain, Real Madrid"
+    },
+    {
+      "as_of_season": 2026,
+      "threshold": 0.75,
+      "n_teams": 2,
+      "teams": "Bayern Munich, Barcelona"
+    }
+  ],
+  "trio_pooled": [
+    {
+      "combinations": 252,
+      "total_weeks": 17101,
+      "total_all_won": 4561,
+      "pooled_hit_rate": 0.2667,
+      "pooled_roi": -0.1012,
+      "best_roi": 0.8755,
+      "worst_roi": -0.8201,
+      "combos_profitable": 63
+    }
+  ],
+  "trio_best": [
+    {
+      "combination": "Atletico Madrid + Borussia Dortmund + Paris Saint-Germain",
+      "seasons_live": 1,
+      "weeks": 28,
+      "all_won": 6,
+      "hit_rate": 0.214,
+      "mean_combined_odds": 6.904,
+      "mean_odds_when_won": 8.752,
+      "staked": 28.0,
+      "returned": 52.514,
+      "profit": 24.514,
+      "roi": 0.876
+    },
+    {
+      "combination": "Atletico Madrid + Borussia Dortmund + Real Madrid",
+      "seasons_live": 1,
+      "weeks": 31,
+      "all_won": 9,
+      "hit_rate": 0.29,
+      "mean_combined_odds": 6.962,
+      "mean_odds_when_won": 5.924,
+      "staked": 31.0,
+      "returned": 53.313,
+      "profit": 22.313,
+      "roi": 0.72
+    },
+    {
+      "combination": "Arsenal + Atletico Madrid + Bayer Leverkusen",
+      "seasons_live": 2,
+      "weeks": 59,
+      "all_won": 17,
+      "hit_rate": 0.288,
+      "mean_combined_odds": 6.15,
+      "mean_odds_when_won": 5.3,
+      "staked": 59.0,
+      "returned": 90.108,
+      "profit": 31.108,
+      "roi": 0.527
+    },
+    {
+      "combination": "Atletico Madrid + Bayer Leverkusen + Real Madrid",
+      "seasons_live": 2,
+      "weeks": 62,
+      "all_won": 17,
+      "hit_rate": 0.274,
+      "mean_combined_odds": 6.092,
+      "mean_odds_when_won": 5.19,
+      "staked": 62.0,
+      "returned": 88.224,
+      "profit": 26.224,
+      "roi": 0.423
+    },
+    {
+      "combination": "Arsenal + Bayer Leverkusen + Real Madrid",
+      "seasons_live": 2,
+      "weeks": 58,
+      "all_won": 18,
+      "hit_rate": 0.31,
+      "mean_combined_odds": 5.4,
+      "mean_odds_when_won": 4.559,
+      "staked": 58.0,
+      "returned": 82.06,
+      "profit": 24.06,
+      "roi": 0.415
+    }
+  ],
+  "trio_worst": [
+    {
+      "combination": "Arsenal + Manchester City + Napoli",
+      "seasons_live": 1,
+      "weeks": 29,
+      "all_won": 4,
+      "hit_rate": 0.138,
+      "mean_combined_odds": 4.389,
+      "mean_odds_when_won": 2.763,
+      "staked": 29.0,
+      "returned": 11.051,
+      "profit": -17.949,
+      "roi": -0.619
+    },
+    {
+      "combination": "Arsenal + Napoli + Paris Saint-Germain",
+      "seasons_live": 1,
+      "weeks": 28,
+      "all_won": 2,
+      "hit_rate": 0.071,
+      "mean_combined_odds": 5.022,
+      "mean_odds_when_won": 4.807,
+      "staked": 28.0,
+      "returned": 9.614,
+      "profit": -18.386,
+      "roi": -0.657
+    },
+    {
+      "combination": "Barcelona + Napoli + Real Madrid",
+      "seasons_live": 1,
+      "weeks": 33,
+      "all_won": 3,
+      "hit_rate": 0.091,
+      "mean_combined_odds": 5.926,
+      "mean_odds_when_won": 3.231,
+      "staked": 33.0,
+      "returned": 9.693,
+      "profit": -23.307,
+      "roi": -0.706
+    },
+    {
+      "combination": "Barcelona + Borussia Dortmund + Napoli",
+      "seasons_live": 1,
+      "weeks": 31,
+      "all_won": 2,
+      "hit_rate": 0.065,
+      "mean_combined_odds": 8.232,
+      "mean_odds_when_won": 2.866,
+      "staked": 31.0,
+      "returned": 5.733,
+      "profit": -25.267,
+      "roi": -0.815
+    },
+    {
+      "combination": "Arsenal + Barcelona + Napoli",
+      "seasons_live": 1,
+      "weeks": 29,
+      "all_won": 2,
+      "hit_rate": 0.069,
+      "mean_combined_odds": 5.158,
+      "mean_odds_when_won": 2.609,
+      "staked": 29.0,
+      "returned": 5.218,
+      "profit": -23.782,
+      "roi": -0.82
+    }
+  ],
+  "price_buckets": [
+    {
+      "odds_band": "[0.0, 2.5)",
+      "weeks": 3304,
+      "hit_rate": 0.4346,
+      "breakeven_hit_rate": 0.4785,
+      "mean_odds": 2.125,
+      "roi": -0.0836,
+      "roi_se": 0.0184,
+      "signif": "-"
+    },
+    {
+      "odds_band": "[2.5, 3.0)",
+      "weeks": 2671,
+      "hit_rate": 0.3504,
+      "breakeven_hit_rate": 0.3644,
+      "mean_odds": 2.7519,
+      "roi": -0.0385,
+      "roi_se": 0.0254,
+      "signif": "noise"
+    },
+    {
+      "odds_band": "[3.0, 3.5)",
+      "weeks": 2376,
+      "hit_rate": 0.2946,
+      "breakeven_hit_rate": 0.3092,
+      "mean_odds": 3.2404,
+      "roi": -0.0484,
+      "roi_se": 0.0303,
+      "signif": "noise"
+    },
+    {
+      "odds_band": "[3.5, 4.0)",
+      "weeks": 1885,
+      "hit_rate": 0.2573,
+      "breakeven_hit_rate": 0.2675,
+      "mean_odds": 3.7432,
+      "roi": -0.038,
+      "roi_se": 0.0377,
+      "signif": "noise"
+    },
+    {
+      "odds_band": "[4.0, 5.0)",
+      "weeks": 2428,
+      "hit_rate": 0.2133,
+      "breakeven_hit_rate": 0.2253,
+      "mean_odds": 4.4557,
+      "roi": -0.0567,
+      "roi_se": 0.0369,
+      "signif": "noise"
+    },
+    {
+      "odds_band": "[5.0, 6.0)",
+      "weeks": 1354,
+      "hit_rate": 0.1566,
+      "breakeven_hit_rate": 0.1838,
+      "mean_odds": 5.4559,
+      "roi": -0.1471,
+      "roi_se": 0.0539,
+      "signif": "-"
+    },
+    {
+      "odds_band": "[6.0, 8.0)",
+      "weeks": 1426,
+      "hit_rate": 0.1234,
+      "breakeven_hit_rate": 0.1464,
+      "mean_odds": 6.8801,
+      "roi": -0.1603,
+      "roi_se": 0.0595,
+      "signif": "-"
+    },
+    {
+      "odds_band": "[8.0, 999.0)",
+      "weeks": 1657,
+      "hit_rate": 0.0591,
+      "breakeven_hit_rate": 0.0916,
+      "mean_odds": 12.1992,
+      "roi": -0.3622,
+      "roi_se": 0.065,
+      "signif": "-"
+    }
+  ],
+  "baseline_legs": {
+    "legs": 1577,
+    "hit_rate": 0.6727964489537096,
+    "mean_odds": 1.5322384273937857,
+    "mean_model_p": 0.6606316621265875,
+    "staked": 1577.0,
+    "returned": 1513.15,
+    "profit": -63.84999999999991,
+    "roi": -0.04048826886493336
+  },
+  "sweep_prob": [
+    {
+      "threshold": 0.0,
+      "legs_kept": 1577,
+      "pct_kept": 1.0,
+      "hit_rate": 0.6728,
+      "mean_odds": 1.5322,
+      "roi_singles": -0.0405,
+      "parlay_weeks": 256,
+      "roi_parlay": -0.6484
+    },
+    {
+      "threshold": 0.5,
+      "legs_kept": 1368,
+      "pct_kept": 0.8675,
+      "hit_rate": 0.7069,
+      "mean_odds": 1.407,
+      "roi_singles": -0.0411,
+      "parlay_weeks": 254,
+      "roi_parlay": -0.4338
+    },
+    {
+      "threshold": 0.55,
+      "legs_kept": 1248,
+      "pct_kept": 0.7914,
+      "hit_rate": 0.7276,
+      "mean_odds": 1.3603,
+      "roi_singles": -0.0368,
+      "parlay_weeks": 251,
+      "roi_parlay": -0.2277
+    },
+    {
+      "threshold": 0.6,
+      "legs_kept": 1093,
+      "pct_kept": 0.6931,
+      "hit_rate": 0.7457,
+      "mean_odds": 1.3224,
+      "roi_singles": -0.0349,
+      "parlay_weeks": 245,
+      "roi_parlay": -0.2132
+    },
+    {
+      "threshold": 0.65,
+      "legs_kept": 886,
+      "pct_kept": 0.5618,
+      "hit_rate": 0.7754,
+      "mean_odds": 1.2784,
+      "roi_singles": -0.021,
+      "parlay_weeks": 228,
+      "roi_parlay": -0.2004
+    },
+    {
+      "threshold": 0.7,
+      "legs_kept": 688,
+      "pct_kept": 0.4363,
+      "hit_rate": 0.798,
+      "mean_odds": 1.2383,
+      "roi_singles": -0.0179,
+      "parlay_weeks": 202,
+      "roi_parlay": -0.1274
+    },
+    {
+      "threshold": 0.75,
+      "legs_kept": 461,
+      "pct_kept": 0.2923,
+      "hit_rate": 0.8048,
+      "mean_odds": 1.2015,
+      "roi_singles": -0.0393,
+      "parlay_weeks": 146,
+      "roi_parlay": -0.1045
+    },
+    {
+      "threshold": 0.8,
+      "legs_kept": 253,
+      "pct_kept": 0.1604,
+      "hit_rate": 0.8419,
+      "mean_odds": 1.1595,
+      "roi_singles": -0.0265,
+      "parlay_weeks": 62,
+      "roi_parlay": -0.1487
+    }
+  ],
+  "sweep_ev": [
+    {
+      "threshold": -1.0,
+      "legs_kept": 1577,
+      "pct_kept": 1.0,
+      "hit_rate": 0.6728,
+      "mean_odds": 1.5322,
+      "roi_singles": -0.0405,
+      "parlay_weeks": 256,
+      "roi_parlay": -0.6484
+    },
+    {
+      "threshold": -0.1,
+      "legs_kept": 1164,
+      "pct_kept": 0.7381,
+      "hit_rate": 0.6624,
+      "mean_odds": 1.5451,
+      "roi_singles": -0.0551,
+      "parlay_weeks": 248,
+      "roi_parlay": -0.4325
+    },
+    {
+      "threshold": -0.05,
+      "legs_kept": 780,
+      "pct_kept": 0.4946,
+      "hit_rate": 0.6167,
+      "mean_odds": 1.6142,
+      "roi_singles": -0.0915,
+      "parlay_weeks": 220,
+      "roi_parlay": -0.3857
+    },
+    {
+      "threshold": 0.0,
+      "legs_kept": 419,
+      "pct_kept": 0.2657,
+      "hit_rate": 0.568,
+      "mean_odds": 1.7588,
+      "roi_singles": -0.1084,
+      "parlay_weeks": 122,
+      "roi_parlay": -0.4293
+    },
+    {
+      "threshold": 0.02,
+      "legs_kept": 324,
+      "pct_kept": 0.2055,
+      "hit_rate": 0.5278,
+      "mean_odds": 1.8494,
+      "roi_singles": -0.1335,
+      "parlay_weeks": 89,
+      "roi_parlay": -0.4432
+    },
+    {
+      "threshold": 0.05,
+      "legs_kept": 211,
+      "pct_kept": 0.1338,
+      "hit_rate": 0.4929,
+      "mean_odds": 2.0041,
+      "roi_singles": -0.1216,
+      "parlay_weeks": 51,
+      "roi_parlay": -0.3921
+    },
+    {
+      "threshold": 0.1,
+      "legs_kept": 124,
+      "pct_kept": 0.0786,
+      "hit_rate": 0.4274,
+      "mean_odds": 2.1976,
+      "roi_singles": -0.1485,
+      "parlay_weeks": 22,
+      "roi_parlay": -0.3491
+    },
+    {
+      "threshold": 0.2,
+      "legs_kept": 49,
+      "pct_kept": 0.0311,
+      "hit_rate": 0.3265,
+      "mean_odds": 2.4731,
+      "roi_singles": -0.2496,
+      "parlay_weeks": 5,
+      "roi_parlay": -1.0
+    }
+  ],
+  "correct_score": {
+    "model_hit_rate": 0.12478852815596551,
+    "always_1_1": 0.12132441794892451,
+    "n": 12413,
+    "breakeven_odds": 8.013557133634603,
+    "share_predicting_1_1": 0.5753645371787642,
+    "by_league": [
+      {
+        "league": "Premier League",
+        "n": 2680,
+        "hit_rate": 0.1116
+      },
+      {
+        "league": "La Liga",
+        "n": 2691,
+        "hit_rate": 0.139
+      },
+      {
+        "league": "Ligue 1",
+        "n": 2356,
+        "hit_rate": 0.1125
+      },
+      {
+        "league": "Bundesliga",
+        "n": 2006,
+        "hit_rate": 0.1171
+      },
+      {
+        "league": "Serie A",
+        "n": 2680,
+        "hit_rate": 0.1403
+      }
+    ]
+  }
+}
