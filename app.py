@@ -239,18 +239,9 @@ with tab_any:
 # --- weekly scorecard ------------------------------------------------------
 with tab_week:
     st.markdown(
-        """
-How many forecasts the model made each week, and how many it got right —
-split into two separate questions:
-
-- **Result** — did it call the home win / draw / away win correctly?
-- **Exact score** — did its single most likely scoreline match the actual one?
-
-These are very different bars. The result is a three-way call. The exact
-score is one cell out of a hundred-plus, and the model's own most likely
-scoreline typically carries only a 10–15% probability, so a low hit rate
-here is expected rather than a fault.
-        """
+        "Forecasts sealed before kickoff, scored three ways. Backtest "
+        "reference points over 12,413 predictions: result 52.3%, "
+        "scoreline-implied result 41.7%, exact score 12.5%."
     )
 
     led = _filter_league(_ledger(), league)
@@ -258,10 +249,8 @@ here is expected rather than a fault.
 
     if view.empty:
         st.info(
-            "No sealed predictions for this league yet. Run "
-            "`python -m plfc.ledger` to start logging forecasts. The log "
-            "builds from the first run — it cannot be backfilled, which is "
-            "the point."
+            "No sealed predictions for this league yet. The log builds from "
+            "the first run and cannot be backfilled."
         )
     else:
         settled = view[view["actual"].notna() & (view["actual"] != "")].copy()
@@ -307,20 +296,16 @@ here is expected rather than a fault.
                       delta=f"{n_scr / n:.0%}", delta_color="off")
 
             st.caption(
-                "**Result** is the model's highest-probability outcome. "
-                "**Scoreline's result** reads win/draw/loss off the most "
-                "likely scoreline instead — 2-0 counts as a home win even "
-                "if the match finished 2-1. **Exact score** needs the "
-                "scoreline itself to be right."
+                "Result = highest-probability outcome. Scoreline's result = "
+                "win/draw/loss read off the most likely scoreline. "
+                "Exact score = that scoreline was right."
             )
 
             if n < 50:
                 st.warning(
-                    f"Only {n} settled predictions. Football is high-variance: "
-                    "at the model's measured ~53% result accuracy, a run of "
-                    "8-from-10 happens by chance roughly one week in twenty. "
-                    "Read these as a log, not as evidence, until you have a "
-                    "few hundred."
+                    f"{n} settled predictions. Too few to read as evidence — "
+                    "at 52% accuracy an 8-from-10 week occurs by chance "
+                    "about once a month."
                 )
 
             weekly = (
@@ -388,9 +373,9 @@ here is expected rather than a fault.
                     miss["p_assigned"] = miss.apply(
                         lambda r: r[r["actual"]], axis=1)
                     st.caption(
-                        "`p_assigned` is the probability the model gave to what "
-                        "actually happened. A miss at 30% is the model working "
-                        "as intended; a miss at 5% is worth looking at."
+                        "`p_assigned` = probability assigned to what actually "
+                        "happened. Misses at 30% are expected; misses at 5% "
+                        "are worth checking."
                     )
                     st.dataframe(
                         miss[cols + ["p_assigned"]]
@@ -406,10 +391,9 @@ here is expected rather than a fault.
                     a = int(dis["result_hit"].sum())
                     b = int(dis["score_result_hit"].sum())
                     st.markdown(
-                        f"{len(dis)} match(es) where the highest-probability "
-                        f"outcome and the most likely scoreline pointed "
-                        f"different ways. Result route right {a}, "
-                        f"scoreline route right {b}."
+                        f"{len(dis)} matches where the two routes diverged. "
+                        f"Result route right {a}, scoreline route right {b}. "
+                        "They diverge on 59.5% of backtested matches."
                     )
                     st.dataframe(
                         dis[cols].sort_values("match_date", ascending=False)
@@ -432,16 +416,9 @@ here is expected rather than a fault.
 # --- live track record -----------------------------------------------------
 with tab_rec:
     st.markdown(
-        """
-Every forecast this model has made, sealed with a timestamp before kickoff
-and reconciled against the result afterwards.
-
-This is different from the backtest in the next tab, and stronger evidence.
-A backtest is **retrospective** — it reconstructs what the model would have
-said, and can be re-run with different settings until the numbers flatter you.
-This log is **prospective**: the prediction was written down before the match
-was played and is never edited.
-        """
+        "Forecasts timestamped before kickoff, reconciled after. Append-only "
+        "— a prediction is never edited once written. Unlike the backtest, "
+        "this cannot be re-run with different settings."
     )
 
     led = _filter_league(_ledger(), league)
@@ -461,10 +438,8 @@ was played and is never edited.
 
         if rec.get("n_settled", 0) < 30:
             st.warning(
-                f"Only {rec.get('n_settled', 0)} settled predictions so far. "
-                "Football is high-variance — these numbers are dominated by "
-                "noise until you have a few hundred. Report the backtest for "
-                "now and let this accumulate."
+                f"{rec.get('n_settled', 0)} settled. Dominated by noise below "
+                "a few hundred; the backtest is the reportable figure for now."
             )
 
         view = latest_before_kickoff(led)
@@ -485,10 +460,9 @@ was played and is never edited.
 # --- ratings ---------------------------------------------------------------
 with tab_rate:
     st.markdown(
-        "Attack and defence strengths on a log scale. Higher is better for both. "
-        "`weighted_matches` reflects time decay — a team's recent matches count "
-        "far more than old ones, so a promoted side shows a low value and is "
-        "shrunk toward the prior."
+        "Attack and defence on a log scale, higher is better. "
+        "`weighted_matches` reflects time decay, so promoted sides show a low "
+        "value and are shrunk toward the prior."
     )
     st.dataframe(model.ratings().round(3), use_container_width=True, height=520)
     st.caption(
@@ -497,26 +471,18 @@ with tab_rate:
         f"Half-life: {model.half_life_days:.0f} days · "
         f"{len(model.teams)} teams in {display_name(league)}"
     )
-    st.info(
-        "These numbers are on a scale estimated from this league alone. "
-        "A 0.9 here and a 0.9 in another league are not the same thing — "
-        "clubs meet across leagues too rarely to place them on a common scale."
+    st.caption(
+        "Scale is estimated per league. Values are not comparable between "
+        "leagues — clubs meet across them too rarely to place on a common scale."
     )
 
 
 # --- honesty tab -----------------------------------------------------------
 with tab_val:
     st.markdown(
-        """
-Evaluated by **walk-forward validation**: the model is refit on everything
-strictly before each date and predicts forward. No shuffled cross-validation —
-that would leak future matches into training and inflate every number here.
-
-The benchmark that matters is the **bookmaker closing line**, not zero.
-Football outcomes sit close to the noise ceiling; the market reaches roughly
-53–55% accuracy on three-way results with far more information than this
-model has. Getting close to it is the honest goal.
-        """
+        "Walk-forward: refit on everything strictly before each date, predict "
+        "forward. Shuffled cross-validation would leak future matches into "
+        "training. Benchmark is the closing line, not zero."
     )
     if st.button(f"Run backtest for {display_name(league)} (takes a minute)"):
         with st.spinner("Walking forward…"):
@@ -530,10 +496,7 @@ model has. Getting close to it is the honest goal.
                 cal.set_index("mean_predicted")[["observed_rate"]],
                 use_container_width=True,
             )
-            st.caption(
-                "A perfectly calibrated model traces the diagonal: when it says "
-                "30%, the thing happens 30% of the time."
-            )
+            st.caption("Calibrated means tracing the diagonal.")
 
     with st.expander("Known limitations"):
         st.markdown(

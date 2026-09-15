@@ -768,137 +768,607 @@ correct-score to the edge buckets to find out.
 
 ---
 
-## Part 11: Where things stand
+## Part 11: Five leagues, five models
 
-**Complete and running in production:**
+The 503 cleared. Football-Data.co.uk came back, the multi-league ingest ran,
+and the name registry survived contact with the live feed: **16,210 matches
+across five leagues, ten seasons, with closing odds.**
 
-- Premier League pipeline: ingest, model, walk-forward backtest, ledger
-- Deployed on Streamlit Community Cloud
-- GitHub Action refreshing data and settling predictions every Wednesday
-- 100 tests passing, network-free
+### The pooling bug that would have been silent
 
-**Built but not yet run against real data:**
+`walk_forward()` had no league parameter. Pointed at the multi-league
+parquet it would have fitted a single Dixon-Coles across all five leagues --
+exactly the pooling `leagues.py` argues at length must never happen -- and
+it would have done so with no error and no obvious symptom. The ratings
+table would have looked plausible. Every number downstream would have been
+nonsense.
 
-- Multi-league ingestion for La Liga, Serie A, Bundesliga, Ligue 1
-- Per-league validator config
-- ~140 new clubs in the name registry (written from known conventions,
-  **not yet verified against the live feed** -- run
-  `python scripts/audit_leagues.py` when the site recovers)
+The fix is a guard that refuses rather than guesses:
 
-**Blocked on football-data.co.uk returning HTTP 503.**
+```python
+elif len(present) > 1:
+    raise ValueError(
+        "matches spans multiple leagues but no league was specified. "
+        "Dixon-Coles strengths are only identified within a league."
+    )
+```
 
-**Not started: Phase 2 and Phase 3.** See the checklist below.
+Same philosophy as the name resolver and the validator: when the code
+cannot know, it stops.
+
+### Warm starting
+
+Five leagues × ~9 test seasons × biweekly refits is a few thousand model
+fits. The optimiser was starting from a zero vector every single time,
+throwing away a very good guess -- consecutive fits differ by two weeks of
+matches, so the previous solution is nearly the answer.
+
+`fit(..., warm_start=previous_model)` seeds `x0` from the prior fit.
+Verified on synthetic data: max probability difference 0.0001. Same
+objective, same optimum, far fewer iterations. Five leagues became a coffee
+break instead of an overnight job.
+
+### The per-league scorecard
+
+| League | Model | Base rates | Market | Share of market edge |
+|---|---|---|---|---|
+| Premier League | 0.5853 | 0.6469 | 0.5749 | 85.5% |
+| La Liga | 0.5875 | 0.6454 | 0.5773 | 85.0% |
+| Serie A | 0.5838 | 0.6562 | 0.5725 | 86.5% |
+| Bundesliga | 0.5931 | 0.6494 | 0.5772 | 78.1% |
+| Ligue 1 | 0.6019 | 0.6501 | 0.5888 | 78.6% |
+
+12,413 walk-forward predictions. **The model loses to the closing line in
+all five leagues**, capturing 78-87% of the bookmaker's improvement over
+base rates using nothing but goals and dates. Remarkably consistent, and
+the right result: a goals-only model beating five independent markets
+would have meant a bug.
+
+The share-of-market-edge column is blanked when the market barely clears
+base rates, because the ratio explodes and means nothing there.
 
 ---
 
-## Phase 2 and 3 build checklist
+## Part 12: The calibration layer that was built and rejected
 
-### Phase 2: The case study
+Refitting weekly re-estimates team strength from newer goals. That is
+learning about **teams**. Nothing in the pipeline ever noticed whether the
+model's own 55% calls were coming in at 55%. That is a calibration layer,
+and it was the obvious Phase 4 item.
 
-**Team selection (rolling, no hindsight)**
+Two methods, both deliberately tiny: temperature scaling (one parameter,
+`p ∝ p^(1/T)`) and vector scaling (six). Anything richer -- isotonic,
+per-bin lookups -- would fit noise in a few thousand matches.
 
-- [ ] Rolling 3-season weighted win rate, weights 3:2:1 toward most recent
-- [ ] Win rate, not points-per-game -- draws pay nothing on a moneyline
-- [ ] Top 8 globally across leagues, 60% floor
-- [ ] Tier 2 (prior top 6) for the second, higher-risk layer
-- [ ] Shortlist recomputed each season from **prior seasons only**
-- [ ] Sanity check: does the 2025-26 shortlist roughly match the user's
-      list (Real Madrid, Barcelona, Atletico, Bayern, PSG, Arsenal,
-      Man City, Inter)?
+The evaluation had to be walk-forward too. Fitting the calibrator on all
+predictions and reporting improved metrics on those same predictions is
+circular and always looks like it worked.
 
-**Fixture filtering -- the key correction**
+**Result on 2,251 out-of-sample Premier League predictions:**
 
-- [ ] Frequency table built on **filtered** legs, not every shortlisted
-      team's every match
-- [ ] Model probability per fixture, walk-forward (fit strictly before
-      match date)
-- [ ] Threshold as a **variable**: 75/80/85/90% swept, not fixed
-- [ ] Report how many weeks yield zero qualifying legs
+| | Brier | log loss | ECE |
+|---|---|---|---|
+| Raw model | 0.5855 | 0.9844 | 0.0107 |
+| Calibrated | 0.5859 | 0.9846 | 0.0088 |
+| Change | +0.0004 | +0.0003 | −0.0019 |
 
-**The core tables**
+Temperature came back at 1.09, close enough to 1.0 that it was mostly
+fitting sampling noise in the training window and applying it as a
+correction to the next block. ECE improved slightly; Brier got marginally
+worse.
 
-- [ ] Legs failing (0 / 1 / 2 / 3+) x frequency, per threshold
-- [ ] Same table with **real historical closing odds** -> actual P&L
-- [ ] Year-by-year breakdown -- does it work every season, or does one
-      year carry it?
-- [ ] Parlay pricing computed properly, not assumed to multiply cleanly
+**Not deployed.** The model was already well calibrated -- the calibration
+table tracks the diagonal -- so there was nothing for the layer to correct,
+and an unnecessary parameter can only cost you.
 
-**The test that decides it**
+`plfc/calibration.py` stays in the repo, imported by nothing. "I built a
+calibration layer, tested it walk-forward, and it did not earn its place"
+is a stronger thing to be able to say than shipping something that makes
+the numbers slightly worse.
 
-- [ ] Model probability vs market implied vs **observed frequency**, per
-      threshold bucket
-- [ ] Confidence intervals; sample shrinks fast at 90%
-- [ ] CLV framing
-- [ ] Kelly / risk-of-ruin simulator (returns "stake zero" on negative edge)
+Sanity-checked in both directions first: on a synthetic model distorted to
+be overconfident by 1.6×, the calibrator recovered T = 1.619 and improved
+Brier by 0.0150. It works. There was just nothing here to fix.
 
-**Mispricing detector (live tool)**
+---
 
-- [ ] Per fixture: model probability vs de-vigged market probability
-- [ ] **Edge = model_prob x decimal_odds − 1**, not the raw probability gap
-- [ ] De-vig properly; raw implied probabilities sum to >1
-- [ ] Rank current fixtures by edge, flag largest positive gaps
-- [ ] Show both directions -- where the model is more confident than the
-      market (candidate value) and where it is less (avoid, even for an
-      elite team)
-- [ ] Kelly stake per flagged bet, and the honest zero on negative edge
-- [ ] Feed flagged bets into the ledger so CLV accumulates
+## Part 13: Two bugs in the ledger
 
-**Historical validation of the detector**
+### Keys that could never match
 
-- [ ] Bucket every past match by edge size (0-2%, 2-5%, 5-10%, 10%+)
-- [ ] Per bucket: did flagged bets win more often than the price implied?
-- [ ] Realised ROI per bucket with confidence intervals
-- [ ] **The null result matters**: if high-edge flags do not outperform,
-      the model is wrong where it disagrees, and that is the finding
-- [ ] Split favourite vs longshot
-- [ ] Include correct-score markets in the buckets (see Part 10)
+`reconcile()` matches predictions to results on
+`league:season:home:away`. Rows logged before the multi-league work carried
+`league = NaN`, producing keys like `nan:2026:Ipswich Town:Liverpool` while
+the results table produced `ENG-Premier League:2026:Ipswich Town:Liverpool`.
 
-**Exact-score diagnostic**
+Those predictions could never settle. Not "would settle late" -- never, no
+matter how many times the Wednesday job ran. The first ten sealed forecasts
+sat pending indefinitely and it looked like data loss.
 
-- [ ] Counter: how many fixtures per week the model calls on the exact
-      scoreline
-- [ ] Compare observed hit rate against the model's own claimed modal
-      probability -- a test of whether the goal distribution is well
-      specified, not just the outcome probabilities
+Fixed with a one-off backfill that infers each row's league by looking the
+clubs up in the results table rather than assuming Premier League, then
+rebuilds every `match_key`. It also collapsed a set of duplicate rows: ten
+fixtures had been logged twice, once either side of the change, and once
+the keys matched `latest_before_kickoff()` folded them correctly.
 
-**Kane / Mbappe sub-analysis**
+### A row that never existed
 
-- [ ] Goalscorer data -- **no source in the current pipeline has it**;
-      hand-entered CSV is the recommended route (~100 league matches each)
-- [ ] League games only; matches scored in + team result
-- [ ] Gameweeks where **both** scored and **both** teams won
-- [ ] Labelled descriptive -- no odds exist for these markets, so
-      frequency only, no P&L
-- [ ] Note small sample: Kane at Bayern from 2023, Mbappe at Madrid
-      from 2024
+`latest_before_kickoff()` used `groupby().last()`. Pandas' `GroupBy.last()`
+returns the last **non-null value per column**, not the last row. With two
+forecasts for one match it was stitching together a row that never existed,
+taking the later prediction's probabilities and silently back-filling any
+null from the earlier one.
 
-### Phase 3: Streamlit rebuild
+Benign at the time, and a live bug the moment prediction-time odds get
+added for closing-line-value work, since those can legitimately be null on
+the later row. Now `.tail(1)`.
 
-- [ ] Landing page as title screen with case study entry point
-- [ ] Left sidebar navigation: one entry per league + betting tab
-- [ ] Each league page keeps current views (fixtures, ratings, backtest,
-      track record)
-- [ ] Betting tab: frequency tables, threshold slider, P&L, mispricing flags
-- [ ] Case study view with charts and hypothesis tests
+---
 
-### Known constraints
+## Part 14: Phase 2 -- the betting investigation
 
-- No Champions League odds anywhere free -- CL can enter upset frequency,
-  never the mispricing test
-- No player-market odds -- Kane/Mbappe stays descriptive
-- Refitting is NOT learning from errors; calibration feedback is unbuilt
-  (possible Phase 4)
-- Combination structure changes variance, never the mean
+The question: does a rolling shortlist of elite clubs, filtered to
+favourable fixtures, produce legs with positive expected value? The honest
+prior was no, because the model lost to the closing line in aggregate. But
+aggregate performance is dominated by mid-table coin flips; short-priced
+elite favourites are a different population and had not been measured.
 
-### One warning to carry forward
+**The answer is no, established five separate ways.**
 
-xi = 0.0018 was chosen by judgment **before** any results were seen, which
-is what makes the reported backtest a clean out-of-sample estimate. If the
-decay sweep is run and the winning value's Brier is quoted as the headline,
-that number is optimistically biased -- a hyperparameter selected on the
-same data used to report performance. Either keep reporting the untuned
-figures and describe the sweep as sensitivity analysis, or hold out the
-most recent season for a clean final evaluation.
+### The rolling shortlist
+
+Picking clubs by their win rate over six years and then counting how often
+those clubs won over those same six years is circular -- they were selected
+for winning during the window being measured. So the tier rebuilds every
+season from earlier seasons only: 3-season weighted win rate, weights 3:2:1
+toward the most recent.
+
+The tier table across seven seasons settled the threshold question:
+
+| Bar | Clubs per season |
+|---|---|
+| 0.55 | 11-16 |
+| 0.60 | 7-10 |
+| **0.65** | **5-7** |
+| 0.70 | 1-5 |
+| 0.75 | 0-4 |
+
+0.65 gives a workable parlay every year. 0.70 collapses to Manchester City
+alone in 2023; 0.75 is empty in four of seven years.
+
+**The churn is the proof it works.** Juventus qualifies for 2020-21 then
+disappears. Liverpool for 2020-22. Napoli appears in 2023 straight off
+their title and vanishes. Only PSG and Bayern clear 0.65 in every year.
+
+Napoli is the single best illustration: a hindsight-built list would never
+include them, and they went on to appear in **four of the five worst trio
+combinations**. A forecaster standing in August 2023 would absolutely have
+backed them. An honest backtest has to eat that loss.
+
+### The week anchor -- a measurement error worth recording
+
+Weeks were originally anchored to Monday. English fixtures run Friday to
+Monday, so a Monday night game landed in the *following* week's bucket,
+splitting a single round across two.
+
+Measured on real data across six elite clubs and ten seasons:
+
+| Anchor | All six playing | Five or more |
+|---|---|---|
+| Monday | 55.9% | 81.4% |
+| **Tuesday** | **63.2%** | **83.4%** |
+
+Seven percentage points of pure measurement error. Tuesday puts Fri/Sat/
+Sun/Mon in one bucket and gives midweek rounds their own.
+
+The same measurement killed an earlier design decision. `require_full=True`
+-- counting only weeks where every shortlisted club played -- discards 37%
+of weeks, and discards them **non-randomly**: the discarded weeks are cup
+weekends and midweek rounds, exactly when elite clubs rotate and drop
+points. Filtering them out would have flattered the strategy by removing
+its hardest weeks. The default changed to counting the legs that actually
+existed.
+
+### ⚠️ The metric that lied
+
+**This is the most important thing in Phase 2.**
+
+The first version computed edge as `hit_rate − 1/mean(odds)` and reported
+**+3.5% edge** on the shortlist strategy. Positive edge, negative ROI, in
+every single row -- a contradiction that sat in the output for several
+iterations before it got questioned.
+
+The formula is wrong. By Jensen's inequality `1/mean(odds) ≠ mean(1/odds)`,
+and with combined parlay odds spanning 4 to 15 the gap is large enough to
+flip the sign.
+
+Demonstrated on a synthetic book built to lose 12% by construction:
+
+| | |
+|---|---|
+| hit rate | 0.1325 |
+| `1/mean(odds)` → "edge" | **+0.0184** (wrong, looks profitable) |
+| `mean(1/odds)` → edge | −0.0076 (correct sign) |
+| realised ROI | **−0.1436** (the truth) |
+
+It also hid the mechanism. Wins arrived at odds of 6.46 against an all-week
+average of 8.76. **You win the cheap weeks and lose the expensive ones** --
+short prices mean easy fixtures -- and averaging odds then inverting erases
+that entirely.
+
+Every figure now settles each week at its own price and sums the money.
+`mean_odds_when_won` is reported alongside `mean_combined_odds` in every
+table so the pattern stays visible.
+
+### Result 1: parlays lose at every leg count
+
+Five-team shortlist, 318 weeks, real closing odds:
+
+| Legs | Weeks | Hit rate | Mean odds | Odds when won | ROI |
+|---|---|---|---|---|---|
+| 2 | 8 | 50.0% | 2.16 | 1.69 | −15.3% |
+| 3 | 24 | 33.3% | 3.53 | 2.94 | −2.1% |
+| 4 | 44 | 18.2% | 5.62 | 4.29 | −21.9% |
+| 5 | 242 | 14.5% | 8.07 | 5.79 | −16.3% |
+| **all** | **318** | 17.3% | 7.24 | 4.86 | **−16.0%** |
+
+`mean_odds_when_won` is below `mean_combined_odds` in every row without
+exception.
+
+Season by season with no hindsight, every season loses: −83%, −66%, −52%,
+−50%, −32%, −19%. The trend improves as the shortlist tightened and odds
+shortened, but never crosses zero.
+
+### Result 2: three legs is better and still loses
+
+Three-leg parlays, every combination, rolling tier:
+
+| Bar | Trios | Trio-weeks | All three won | Pooled ROI | Profitable |
+|---|---|---|---|---|---|
+| 0.60 | 252 | 17,101 | 26.7% | **−10.1%** | 63 / 252 |
+| 0.65 | 72 | 3,584 | 27.9% | **−19.8%** | 13 / 72 |
+
+Three legs compound the margin three times instead of five, so −10% instead
+of −16%. Real improvement, wrong side of zero.
+
+**Every large winner is a small sample.** Best trio at the 0.60 bar: one
+season, 28 weeks, +87.6%. The trio with the most weight -- Barcelona +
+Bayern + PSG, five seasons, 114 weeks -- returns +8.3%. That is regression,
+not skill.
+
+**The tighter bar loses more.** Better teams, worse returns: shorter prices
+leave less room to absorb an upset while the compounded margin stays.
+"Pick only the very best teams" is actively the wrong instinct.
+
+### Result 3: fixture filtering does nothing
+
+1,577 shortlisted legs with odds. Baseline: 67.3% hit rate at mean odds
+1.53, **−4.05% ROI** -- approximately the bookmaker margin on short-priced
+favourites.
+
+Filtering to fixtures the model thinks are easy:
+
+| Min model probability | Legs kept | Hit rate | ROI |
+|---|---|---|---|
+| none | 1,577 | 67.3% | −4.1% |
+| 0.60 | 1,093 | 74.6% | −3.5% |
+| 0.70 | 688 | 79.8% | −1.8% |
+| 0.80 | 253 | 84.2% | −2.7% |
+
+Hit rate climbs 17 points. **ROI never turns positive at any threshold.**
+Selecting easy fixtures selects short prices; the market had already priced
+the ease in.
+
+### Result 4: the model's disagreement is anti-predictive
+
+The sharpest finding in the project. Filtering to legs where the model
+thinks the market is most wrong:
+
+| Min expected value | Legs kept | ROI |
+|---|---|---|
+| none | 1,577 | −4.1% |
+| ≥ 0.00 | 419 | −10.8% |
+| ≥ 0.05 | 211 | −12.2% |
+| ≥ 0.10 | 124 | −14.9% |
+| ≥ 0.20 | 49 | −25.0% |
+
+Monotonically worse. **The legs where the model most disagreed with the
+market were the legs where the model was most wrong.**
+
+A model with no information would show a flat line. This slopes down, which
+says something specific: the market holds information the model cannot see
+-- team news, injuries, rotation, weight of money -- and the fixtures where
+they diverge most are precisely where that missing information matters
+most. Disagreement was not insight. It was the size of the blind spot.
+
+### Result 5: no price band is profitable
+
+If expected value varied by something observable before the bet, you would
+bet only that band. Combined price is known before kickoff, so it is
+legitimately usable. Trio-weeks bucketed by combined odds, 0.60 bar:
+
+| Odds band | Weeks | Won | Needed | ROI |
+|---|---|---|---|---|
+| < 2.5 | 3,304 | 43.5% | 47.9% | −8.4% |
+| 2.5-3.0 | 2,671 | 35.0% | 36.4% | −3.9% |
+| 3.0-3.5 | 2,376 | 29.5% | 30.9% | −4.8% |
+| 3.5-4.0 | 1,885 | 25.7% | 26.8% | −3.8% |
+| 4.0-5.0 | 2,428 | 21.3% | 22.5% | −5.7% |
+| 5.0-6.0 | 1,354 | 15.7% | 18.4% | −14.7% |
+| 6.0-8.0 | 1,426 | 12.3% | 14.6% | −16.0% |
+| 8.0+ | 1,657 | 5.9% | 9.2% | −36.2% |
+
+**This table is the whole answer.** Across 17,101 weeks, what the trios
+actually did tracks what the price implied, in every band. When the market
+said 30.9%, they won 29.5%. When it said 9.2%, they won 5.9%. The
+bookmaker's estimate was accurate everywhere; the persistent gap underneath
+is the margin, and no band clears it.
+
+### Result 6: staking cannot help, by construction
+
+Total return is `Σ (stake_i × EV_per_dollar_i)`. If every term is negative,
+no set of positive stakes makes the sum positive. Staking changes variance
+and speed, never sign.
+
+Simulated over 3,584 weeks from $10,000, on a series *milder* than the one
+measured (−4.7% vs −19.8%):
+
+| Plan | Final |
+|---|---|
+| Flat $100 | $0 busted |
+| 2% of bankroll | $53 |
+| 10% of bankroll | $1 busted |
+| **Kelly, given the true win rate** | **$1 busted** |
+| More on short prices | $0 busted |
+| More on long prices | $0 busted |
+| Martingale | $0 busted |
+
+Kelly is the row that matters. It is the mathematically optimal staking
+rule, it was handed the true win probability, and it still went to zero --
+because with negative edge Kelly's correct answer is to stake nothing.
+
+Proportional staking survives longest only because it can never bet what
+you do not have. It approaches zero asymptotically instead of hitting it.
+That is a slower death, not a profit.
+
+### The arithmetic underneath all of it
+
+The margin on a single elite favourite is about 4%. Stack three on one
+slip: 0.96³ ≈ 0.88. The measured pooled ROI of −10% is almost exactly that.
+A parlay is not a way to win more; it is a way to pay the margin three
+times on one bet.
+
+---
+
+## Part 15: Correct score, and the two routes
+
+### The modal scoreline barely beats a constant guess
+
+12,413 walk-forward predictions:
+
+| | Hit rate | Breakeven odds |
+|---|---|---|
+| Model's most likely scoreline | **12.48%** | 8.01 |
+| Always guessing 1-1 | **12.13%** | 8.24 |
+
+A gap of **0.35 percentage points** -- inside one standard error of zero.
+And **57.5% of the model's picks are 1-1**.
+
+There is a flicker of signal: when the model picks 1-1 those land 13.32%,
+above the 12.13% unconditional rate, so the grid does choose *which*
+matches finish 1-1 slightly better than chance. Far too small to pay a 20%+
+overround.
+
+By predicted scoreline:
+
+| Pick | Times | Hit rate | Breakeven |
+|---|---|---|---|
+| 1-1 | 7,142 | 13.32% | 7.51 |
+| 1-0 | 1,581 | 13.16% | 7.60 |
+| 2-0 | 1,351 | 10.88% | 9.19 |
+| 2-1 | 429 | **9.32%** | 10.73 |
+
+2-1 is the worst pick and prices like a common scoreline. Whenever the
+model says 2-1, that is a bet to skip.
+
+By league, and the spread is large enough to be real:
+
+| League | Hit rate | Breakeven |
+|---|---|---|
+| Serie A | 14.03% | 7.13 |
+| La Liga | 13.90% | 7.20 |
+| Bundesliga | 11.71% | 8.54 |
+| Ligue 1 | 11.25% | 8.89 |
+| Premier League | 11.16% | 8.96 |
+
+Lower-scoring, more predictable leagues concentrate probability into fewer
+cells. If any version of correct-score betting is viable it is Italy and
+Spain only, at 7.50+, and it is still thin.
+
+**The weekly plan, costed.** 10 bets × $10 × 5 leagues = $500/week. At the
+measured 12.48% you need 8.01 on every bet to break even. At 7.00 that is
+−$63/week, roughly **−$2,400 a season**. The 8.00 row breaks even exactly
+and assumes never taking a bad price.
+
+Common scorelines price 6.00-9.00 and are the most efficiently priced part
+of the correct-score market -- heaviest volume, priced by weight of
+opinion. The model always bets into the tightest corner of the worst market
+in football.
+
+### Two routes, and why they disagree
+
+The model holds two opinions about every match:
+
+- **argmax** -- the largest of home/draw/away
+- **scoreline** -- the result implied by the most likely scoreline
+
+They disagree on **59.5%** of matches.
+
+| | argmax | scoreline | actual |
+|---|---|---|---|
+| predicts home | 63.1% | 28.9% | 43.1% |
+| predicts draw | **0.5%** | **60.0%** | 25.3% |
+| predicts away | 36.4% | 11.1% | 31.6% |
+
+| Accuracy | argmax **0.5233** | scoreline 0.4165 |
+|---|---|---|
+
+argmax wins by 10.7 points, consistently across all five leagues, far
+beyond noise.
+
+**Draw recall is the diagnostic.** argmax catches 0.6% of the 3,137 draws
+that happened -- 67 draw calls out of 12,413. Not because the model is
+blind to draws; it assigns them 25-29% routinely. A 29% draw simply never
+outranks a 40% home win. The scoreline route catches 65.8% of draws and is
+right on only 27.7% of the ones it calls.
+
+**But the precision table complicates the story.** When the scoreline route
+names a *winner* it is far more precise than argmax: 64.0% vs 53.9% on home
+calls, 58.9% vs 50.0% on away. That looked like a hybrid rule waiting to
+happen.
+
+It was not. A hybrid -- take the scoreline when it names a winner, fall
+back to argmax on draws -- came out **byte-identical to argmax**: same
+accuracy, same 67 draw calls. Whenever the scoreline names a winner, argmax
+already agrees. If the modal score is 2-0 the lambdas strongly favour home
+and both routes say home. The hybrid had nothing to fix.
+
+Which also explains the precision numbers. The scoreline route only names a
+winner on lopsided matches -- it is more precise on a subset selected for
+being easy. The same trap as filtering legs by model probability.
+
+Draw-threshold rules were tested too (call a draw whenever `p_draw ≥ t`).
+Every one loses, monotonically: 0.5252 → 0.5194 → 0.5149 → 0.5118 → 0.5023
+as the bar drops. Out-of-sample on a time split, **no rule beats argmax**.
+
+The draw blindness remains a genuine limitation worth stating rather than
+hiding. The model is not wrong about draws; it just can never surface one
+as a headline call.
+
+---
+
+## Part 16: What the app now consists of
+
+### Structure
+
+```
+app.py                      league selector + five tabs
+pages/1_Case_study.py       the Phase 2 write-up with charts
+build_case_study.py         computes every case-study figure once -> JSON
+plfc/
+  ingest.py                 pull, canonicalise, validate, cache
+  leagues.py                per-league structural config
+  names.py                  resolver that refuses to guess
+  model.py                  Dixon-Coles + warm start
+  backtest.py               walk-forward, league-aware
+  multileague.py            fit/backtest all five, cache predictions
+  ledger.py                 sealed append-only forecast log
+  shortlist.py              rolling elite tier, no hindsight
+  parlay.py                 week anchoring, leg counting, trio counter
+  legfilter.py              fixture-aware leg selection + threshold sweeps
+  calibration.py            built, tested, not deployed
+analysis/                   one-off runner scripts, kept as evidence
+```
+
+### The league selector
+
+Sidebar radio across all five leagues. The model cache is keyed on league
+as well as on `last_refresh()` -- without that, switching leagues would
+show a different league's model, and a data refresh would update the
+ratings table while predictions came from a stale fit.
+
+Models are fitted lazily on page load, cached per league for the life of
+the process. Nothing is serialised to disk; only the data is in the repo.
+
+### The weekly scorecard
+
+Three counters, because the model has more than one opinion:
+
+- **Result correct** -- the highest-probability outcome
+- **Scoreline's result correct** -- win/draw/loss read off the most likely
+  scoreline (2-0 counts as a home win even if it finished 2-1)
+- **Exact score correct** -- the scoreline itself
+
+The first sealed week showed 3 / 8 / 2 on ten matches. The gap between 3
+and 8 is entirely the draw structure described in Part 15: five of those
+ten matches were drawn, argmax said home_win eight times, the scoreline
+said 1-1 six times.
+
+Week-by-week table, plus four expanders: every settled prediction, a
+week-by-week breakdown, misses sorted by the probability assigned to what
+actually happened (a miss at 30% is the model working; a miss at 5% is
+worth looking at), and the matches where the two routes disagreed.
+
+### Other tabs
+
+Fixtures with cold-start warnings, arbitrary matchup with the full
+scoreline grid, live track record against the sealed ledger, team ratings
+with an explicit note that strengths are not comparable across leagues, and
+the walk-forward backtest with calibration curve.
+
+### The case study page
+
+Five sections, four charts, built from a cached JSON so the page computes
+nothing and the numbers cannot drift between visits:
+
+1. Model vs base rates vs closing line across five leagues
+2. The price-bucket chart -- what trios won against what they needed to win
+3. Expected-value filter ROI sliding from −4% to −25%
+4. Correct score against the always-1-1 baseline, per league
+5. The staking simulation table
+
+Two things sit in expanders rather than the main flow, deliberately: the
+Napoli inclusion as proof the rolling shortlist works, and the Jensen error
+that made the first version of the analysis report a profit.
+
+---
+
+## Part 17: Where things stand
+
+**Complete and running:**
+
+- Five league models, fitted and backtested separately, 16,210 matches
+- Weekly scorecard with three counters, sealed prospective ledger
+- Phase 2 investigation complete: the edge does not exist, five ways
+- Case study page deployed
+- GitHub Action refreshing and settling every Wednesday
+
+**Built, tested, deliberately not deployed:**
+
+- Calibration layer (`plfc/calibration.py`) -- no improvement to make
+- `suggest_legs()` in `legfilter.py` -- works, but no threshold produces
+  positive returns historically, so live suggestions would be a
+  nicer-looking way to lose money
+
+**Not built:**
+
+- Player-level markets (Kane scored and Bayern won). Blocked on data:
+  Football-Data.co.uk has no goalscorers and football-data.org's free tier
+  has no match stats. Needs a new feed.
+- Over/under 2.5 and BTTS evaluation. The predictions are now recorded in
+  both the backtest and the ledger and `goals_market_scorecard()` exists,
+  but it has not been run. **This is the cheapest untested idea in the
+  project**: a different market rather than the same one sliced again,
+  two-way so the margin is thinner, with real closing odds in the data.
+- Champions League. No free odds anywhere.
+- De-vigging beyond proportional normalisation. Shin and log-odds methods
+  were specified and not built, because the EV filter result made the
+  question moot -- the model has no edge to recover more precisely.
+
+### The honest summary
+
+The project asked whether a public-data goals model could find an edge in
+the elite-favourite market. It cannot, and the investigation established
+that from six independent directions: aggregate Brier, team selection,
+fixture filtering, model edge, price banding, and staking theory.
+
+The strongest artefacts are not the model. They are the walk-forward
+design, the validator that fails loudly, the name resolver that refuses to
+guess, the rolling shortlist that keeps Napoli in, the calibration layer
+that was tested and rejected, and the edge metric that was found to be
+lying and thrown out.
+
+Most people running this analysis stop at the version that shows +3.5%.
 
 ---
 
@@ -985,3 +1455,31 @@ is not.
 Bookmakers reach 53–55% on three-way results with vastly more information. A
 model claiming 70% has a bug. Saying this unprompted signals that you
 understand your problem domain.
+
+### Three additions from Phase 2
+
+**"Did you find a profitable strategy?"** No, and say it immediately. Then
+explain that the interesting part is *how* it was established: six
+independent lines of evidence, one of which required throwing out a metric
+that had been reporting a profit. An interviewer who has run this analysis
+themselves knows the answer is no. The signal is whether you got there
+honestly.
+
+**"What is the thing you are most proud of?"** The Jensen error. The first
+version of the edge calculation reported +3.5% on a strategy that loses
+16%, and the contradiction sat in the output -- positive edge, negative ROI
+in every row -- for several iterations before it was questioned. Finding a
+bug in your own favourable result is harder than finding one in an
+unfavourable one, because nobody goes looking.
+
+**"Why keep code you do not use?"** `plfc/calibration.py` is imported by
+nothing. It exists because the question "does the model need calibrating?"
+deserved a measured answer rather than an assumption, and the answer was
+no. Deleting it would delete the evidence that the question was asked.
+
+### The one number to lead with
+
+Not accuracy. Not Brier. **78-87% of the bookmaker's edge over base rates,
+captured with nothing but goals and dates, across five independent
+markets.** It is honest about losing, specific about by how much, and it
+frames the model against the right benchmark.
