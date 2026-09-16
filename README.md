@@ -1,284 +1,163 @@
-# Premier League Match Forecaster
+# Football Match Forecaster
 
-A Dixon-Coles bivariate Poisson model for Premier League match outcomes,
-refreshed weekly and evaluated against the bookmaker closing line.
+A Dixon-Coles goals model for Europe's top five leagues, with walk-forward
+evaluation, a sealed prediction ledger, and a published study on whether the
+model can beat the bookmaker's closing line.
+
+**It can't.** The study is the point.
+
+🔗 **[Live app](https://pl-forecaster.streamlit.app)** ·
+📊 **[Evaluation study](https://pl-forecaster.streamlit.app/case_study)**
 
 ---
-
-## Quickstart
-
-```bash
-bash scripts/setup.sh          # venv, deps, test suite
-source .venv/bin/activate
-
-# Get a free API token (email only, no card):
-#   https://www.football-data.org/client/register
-cp .env.example .env           # then paste your token in
-python scripts/check_api.py    # verify token + team names before ingesting
-
-python -m plfc.ingest          # build the dataset (several minutes)
-python -m plfc.backtest        # walk-forward evaluation
-python -m plfc.ledger          # log forecasts for upcoming fixtures
-streamlit run app.py           # dashboard
-```
 
 ## What it does
 
-Pulls ten seasons of Premier League results and closing odds, fits team-level
-attack and defence strengths with exponential time decay, and produces
-calibrated probabilities for upcoming fixtures. A GitHub Action refreshes the
-data every Wednesday at 06:00 UTC, so each matchweek is forecast with current
-form.
+Fits a separate Dixon-Coles bivariate Poisson model to each of the Premier
+League, La Liga, Serie A, Bundesliga and Ligue 1 — 16,210 matches across ten
+seasons with historical closing odds. Produces outcome probabilities, expected
+goals, scoreline distributions and derived markets for upcoming fixtures.
 
-The dashboard has five tabs: this weekend's fixtures with win/draw/loss
-probabilities and expected goals, any custom matchup with a scoreline grid, the
-live track record of past predictions against results, team strength ratings,
-and an evaluation tab that runs the backtest and lists known limitations.
+Every forecast is timestamped and sealed before kickoff in an append-only
+ledger, then reconciled against the result. Data refreshes weekly via GitHub
+Actions.
 
----
+## Headline result
 
-## Project structure
+| League | Model Brier | Base rates | Closing line | Share of market edge |
+|---|---|---|---|---|
+| Premier League | 0.5853 | 0.6469 | 0.5749 | 85.5% |
+| La Liga | 0.5875 | 0.6454 | 0.5773 | 85.0% |
+| Serie A | 0.5838 | 0.6562 | 0.5725 | 86.5% |
+| Bundesliga | 0.5931 | 0.6494 | 0.5772 | 78.1% |
+| Ligue 1 | 0.6019 | 0.6501 | 0.5888 | 78.6% |
+
+12,413 walk-forward predictions. The model captures **78–87% of the
+bookmaker's improvement over base rates** using nothing but goals and dates,
+and loses to the closing line in every league.
+
+That is the expected result. A goals-only model on public data beating five
+independent markets would mean a bug, not a discovery.
+
+## The evaluation study
+
+The app includes a study testing whether a rolling shortlist of elite clubs
+produces positive expected value. The answer is no, established six ways:
+
+- **Aggregate** — loses to the closing line in all five leagues
+- **Team selection** — three-club combinations return −10% on stake across
+  17,101 combination-weeks
+- **Fixture filtering** — restricting to easy fixtures lifts the hit rate from
+  67% to 84% and leaves returns negative at every threshold
+- **Model edge** — restricting to fixtures the model reads as mispriced makes
+  returns *monotonically worse*, from −4% to −25%. Disagreement with the
+  market measures what the model can't see, not what it knows
+- **Price banding** — observed win rates track the price-implied rates across
+  every odds band; no band clears the margin
+- **Stake sizing** — cannot reverse a negative expectation, by linearity of
+  expectation
+
+Methodology notes:
+
+- The elite tier is rebuilt each season from **earlier seasons only**. Clubs
+  that later declined stay in — Napoli qualified in 2023 off their title and
+  appears in four of the five worst combinations. A tier selected with
+  hindsight would improve every figure and be wrong.
+- An earlier version of the edge calculation compared hit rate against
+  `1/mean(odds)` and reported a **positive 3.5% edge** on a strategy that
+  loses. By Jensen's inequality that isn't `mean(1/odds)`, and with combined
+  odds spanning 4 to 15 the error is large enough to invert the conclusion.
+  Every figure now settles each bet at its own price.
+
+Research exercise, not betting advice.
+
+## Design decisions worth knowing
+
+**Walk-forward, never shuffled.** The model refits on everything strictly
+before each test date. Shuffled cross-validation would train on May to predict
+September and inflate every number.
+
+**One model per league.** Dixon-Coles strengths are identified from the graph
+of who played whom. Dense within a league, far too sparse across them.
+`walk_forward()` raises rather than pooling silently.
+
+**The validator fails loudly.** Structural invariants are checked per league
+per season, because Bundesliga plays 306 matches and Ligue 1 changed from 380
+to 306 in 2023-24. Known-incomplete seasons (Ligue 1 abandoned 2019-20) are
+recorded explicitly with a reason, and still get checked for team count — a
+name-join bug inside a curtailed season shouldn't hide behind the exemption.
+
+**The name resolver refuses to guess.** Unknown club names raise rather than
+fuzzy-match. A silent bad join drops rows without an error.
+
+**A calibration layer was built, tested and rejected.** Temperature scaling
+fitted walk-forward returned T ≈ 1.09 and changed Brier by +0.0004 over 2,251
+out-of-sample predictions. The model was already well calibrated, so it isn't
+deployed. `plfc/calibration.py` is imported by nothing and stays as evidence
+the question was asked.
+
+## Structure
 
 ```
-pl-forecaster/
-├── plfc/
-│   ├── __init__.py
-│   ├── names.py           canonical team registry + resolver
-│   ├── footballdata.py    football-data.org API client (fixtures)
-│   ├── ingest.py          pulls, validation, parquet cache
-│   ├── model.py           Dixon-Coles fit and prediction
-│   ├── backtest.py        walk-forward evaluation, calibration, tuning
-│   └── ledger.py          sealed prediction log, reconciled against results
-├── tests/
-│   ├── test_names.py      resolver behaviour
-│   └── test_model.py      parameter recovery, validation invariants
-├── notebooks/
-│   └── 01_explore.py      starter analysis
-├── scripts/
-│   ├── setup.sh
-│   └── check_api.py       token + name check before ingesting
-├── .github/workflows/
-│   ├── refresh.yml        Wednesday 06:00 UTC data refresh
-│   └── tests.yml          CI on push/PR
-├── data/                  parquet cache (matches.parquet is committed)
-├── app.py                 Streamlit front end
-├── requirements.txt       full pipeline
-├── requirements-app.txt   slim deps for deploying the app alone
-├── PROJECT_HISTORY.md     full build log and design rationale
-└── .gitignore
+app.py                    league selector, fixtures, scorecard, ratings
+pages/1_case_study.py     the evaluation study
+build_case_study.py       computes study figures once -> JSON
+plfc/
+  ingest.py               pull, canonicalise, validate, cache
+  leagues.py              per-league structural config
+  names.py                canonical club name resolver
+  model.py                Dixon-Coles + warm start
+  backtest.py             walk-forward, league-aware
+  multileague.py          fit and backtest all five separately
+  ledger.py               sealed append-only forecast log
+  shortlist.py            rolling elite tier, no hindsight
+  parlay.py               week anchoring, combination counting
+  legfilter.py            fixture-aware leg selection
+  calibration.py          built, tested, not deployed
+analysis/                 one-off study scripts
 ```
 
----
-
-## Git setup
+## Running it
 
 ```bash
-cd pl-forecaster
-git init -b main
-git add .
-git commit -m "Initial commit: Dixon-Coles PL forecaster"
-
-# Create an empty repo on GitHub first (no README — you have one), then:
-git remote add origin https://github.com/YOUR_USERNAME/pl-forecaster.git
-git push -u origin main
+git clone https://github.com/lokeshkarthikp-code/pl-forecaster
+pip install -r requirements.txt
+streamlit run app.py    # reads cached data; no API key needed
 ```
 
-**Add the API token as a repo secret.** Settings → Secrets and variables →
-Actions → New repository secret, named `FOOTBALL_DATA_TOKEN`. The refresh
-workflow reads it from there. Never commit `.env`.
+Fixtures need a free [football-data.org](https://www.football-data.org) token
+in `FOOTBALL_DATA_TOKEN`. Results and odds need no key.
 
-**Enable the weekly refresh.** The Action commits data back to the repo, which
-needs write permission: Settings → Actions → General → Workflow permissions →
-*Read and write permissions*. Then trigger a manual run from the Actions tab
-(`workflow_dispatch`) to confirm it works before relying on the schedule.
+## Data
 
-Note that GitHub disables scheduled workflows on repos with no activity for 60
-days. If the refresh stops, a single commit re-enables it.
+- **[Football-Data.co.uk](https://www.football-data.co.uk)** — results and
+  closing odds, read directly as CSV
+- **[football-data.org](https://www.football-data.org)** — forward fixture
+  schedule
 
-**Deploy.** Streamlit Community Cloud connects to the repo, auto-detects
-`app.py`, and redeploys on every push — including the Wednesday data commits.
-Free tier apps sleep after inactivity and take ~30s to wake, so put a
-screenshot on your portfolio page rather than sending someone to a cold start.
+No scraping anywhere in the project. An earlier version used a browser
+automation stack to fetch files that were plain CSV at stable URLs; removing
+it cut ~200MB from the deploy and eliminated the only genuinely fragile
+source.
 
----
+## Known limitations
 
-## Design decisions
+- **No team news.** Injuries, suspensions and rotation are invisible to the
+  model. Section 3 of the study is a direct measurement of how much that costs.
+- **Draws are structurally under-called.** The model assigns draws 25–29%
+  correctly, but a 29% draw never outranks a 40% home win, so the
+  highest-probability outcome is a draw in 0.5% of matches against a 25% base
+  rate. Alternative decision rules were tested; none beat the argmax
+  out-of-sample.
+- **Promoted teams are priors, not estimates**, until they accumulate matches.
+- **Managerial changes** aren't modelled; strength is assumed to drift
+  smoothly.
+- **Odds normalisation is proportional**, which distorts longshots.
 
-**Canonical team registry (`plfc/names.py`).**
-Football data sources spell teams inconsistently — FBref writes
-`Nott'ham Forest`, Football-Data.co.uk writes `Nott'm Forest`, ClubElo writes
-`Forest`. Joining on raw strings drops rows *silently*: no exception, just a
-season with 342 matches instead of 380 and a model trained on a hole.
-
-Every source name maps to one canonical id through three layers: exact alias →
-normalised (accents, punctuation, club suffixes stripped) → fuzzy
-*suggestion*. Fuzzy matching never auto-resolves; it raises with a suggestion
-so a human adds the alias deliberately. This matters concretely: `Barcelona`
-fuzzy-matches `Arsenal` above a 0.6 cutoff. An auto-resolver would accept
-that silently.
-
-`soccerdata` ships with an **empty** replacement table by default — name
-normalisation is not free. `write_soccerdata_config()` exports the registry to
-the path it reads, so names are normalised at the source.
-
-**Loud validation (`plfc/ingest.py`).**
-Every completed season must contain exactly 380 matches and 20 teams. No team
-may play itself (the signature of a name-collapse bug). No duplicate fixtures,
-no nulls in key columns. Validation runs *before* the parquet is overwritten,
-so a failed run leaves the last good dataset intact.
-
-**Walk-forward evaluation, not k-fold.**
-Shuffled cross-validation on time series trains on May to predict September.
-Every number it produces is optimistic and meaningless. The backtest refits on
-everything strictly before each date and predicts forward — exactly the
-information a real forecaster has.
-
-**The benchmark is the market.**
-Bookmaker closing odds reach roughly 53–55% accuracy on three-way outcomes,
-with far more information than this model has. Reporting raw accuracy against
-zero invites the wrong conversation. We report Brier score, log loss, and a
-calibration curve, benchmarked against the closing line.
-
-**Cold start for promoted teams.**
-Three teams arrive from the Championship each season with zero Premier League
-history. Excluding them would make ~15% of fixtures unpredictable and bias
-evaluation toward easy matches. Instead every team's strength is shrunk toward
-an empirical prior, with shrinkage inversely proportional to time-weighted
-matches observed. Established teams barely shrink; promoted sides sit near the
-prior until they earn their own estimate. The dashboard flags these fixtures.
-
-**Time decay is a measured choice, not an assumption.**
-Each match is weighted `exp(-ξ · age_days)`. `python -m plfc.backtest --tune`
-sweeps ξ.
-
-⚠️ A caveat that matters: ξ = 0.0018 was chosen by judgment *before* any results
-were seen, which is what makes the figures above a clean out-of-sample estimate.
-If you sweep ξ and then quote the winner's Brier as your headline, that number
-is optimistically biased — you have selected a hyperparameter on the same data
-you are reporting. Either keep reporting the untuned figures and describe the
-sweep as a sensitivity analysis, or hold out the most recent season for a clean
-final evaluation.
-
-**The Dixon-Coles τ correction.**
-Independent Poisson underestimates 0-0 and 1-1 and overestimates 1-0 and 0-1 —
-football has game-state effects that independence misses. A single parameter ρ
-adjusts those four low-score cells.
-
----
-
-## Results
-
-Dataset: **3,440 matches across 10 seasons**. Walk-forward validation, 14-day
-refit cadence, **2,680 out-of-sample predictions**.
-
-| Model | Brier | Log loss | Accuracy |
-|---|---|---|---|
-| Base rates only | 0.6469 | 1.0688 | 43.5% |
-| **Dixon-Coles** | **0.5853** | **0.9842** | **52.6%** |
-| Bookmaker closing line | 0.5749 | 0.9689 | 54.5% |
-
-**The headline is not the accuracy figure.** The market improves on base rates
-by 0.0720 Brier; this model improves on them by 0.0616. It therefore captures
-**86% of the bookmaker's edge over base rates** — using only historical goals,
-with no injuries, lineups, transfers, team news, or odds in training.
-
-The model loses to the closing line, and that is the expected result. Beating
-it would be the red flag.
-
-### Calibration
-
-| Predicted | Observed | n |
-|---|---|---|
-| 0.068 | 0.094 | 298 |
-| 0.159 | 0.157 | 1,186 |
-| 0.249 | 0.259 | 3,045 |
-| 0.347 | 0.344 | 1,208 |
-| 0.449 | 0.440 | 885 |
-| 0.546 | 0.510 | 643 |
-| 0.646 | 0.655 | 444 |
-| 0.749 | 0.734 | 229 |
-| 0.838 | 0.854 | 89 |
-| 0.925 | 0.846 | 13 |
-
-Close to the diagonal wherever the sample is real: when the model says 35%, it
-happens 34% of the time. Two honest notes — the 0.5–0.6 bin runs slightly hot
-(mild overconfidence on near-coin-flips), and the top bin's apparent miss rests
-on 13 observations, which is noise rather than a finding.
-
-### Model verification
-
-Before touching real data, the fitter was checked against synthetic seasons
-generated from *known* team strengths: it recovered attack ratings at
-**r = 0.967** and home advantage at **0.307** against a true 0.260. That
-validates the machinery. It is not evidence of real-world skill — the synthetic
-data comes from the same Poisson process the model assumes, so success there is
-partly circular.
-
-## Live track record
-
-The backtest is **retrospective**: it reconstructs what the model would have
-said, and can be re-run with different settings until the numbers flatter you.
-
-`plfc/ledger.py` adds the **prospective** record. Every Wednesday it writes down
-predictions for unplayed matches, timestamped, and never edits them. Later runs
-fill in what actually happened. A backtest is a claim; an accumulating log is
-evidence.
-
-The ledger is append-only, keeps multiple forecasts per match (scoring the
-latest one made before kickoff), and stores the model parameters on every row so
-old predictions stay attributable to the model that made them.
-
-**It cannot be backfilled.** It starts from the first run — which is exactly why
-it is credible.
+## Tests
 
 ```bash
-python -m plfc.ledger      # settle what has been played, forecast what is next
+pytest
 ```
 
----
-
-## Limitations
-
-- No team-news: injuries, suspensions and rotation are invisible to the model.
-- No fixture-congestion effects from European or cup competition.
-- Managerial changes violate the smooth-drift assumption.
-- Promoted teams are priors, not estimates, until matches accumulate.
-- Odds are de-vigged proportionally, which slightly distorts longshots
-  (favourite-longshot bias).
-- A forecasting exercise, not betting advice.
-
-## Data sources
-
-| Source | Provides | Access |
-|---|---|---|
-| **Football-Data.co.uk** | Results + closing odds, 25+ leagues, 30+ years | Free static CSVs, no key |
-| **football-data.org** | Fixture schedule, 12 competitions | Free REST API, email registration |
-| **ClubElo** | Baseline ratings (optional) | Free CSV endpoint |
-
-The fixture source was originally FBref, scraped from HTML. It was swapped for
-football-data.org's REST API — the one genuinely fragile dependency replaced
-with a documented contract.
-
-**Odds deliberately stay on the CSV feed.** football-data.org's free tier has
-no odds (a paid add-on from the Standard tier up), and the closing line is the
-benchmark the whole evaluation rests on. Moving odds behind a paywall would
-gut the most defensible part of the project.
-
-football-data.org is free for non-commercial use; a portfolio project
-qualifies. Free tier is 10 requests/minute, which is generous here — the
-pipeline needs roughly one request per season.
-
-## Multi-league
-
-`COMPETITIONS` in `plfc/footballdata.py` lists the free-tier codes (La Liga,
-Serie A, Bundesliga, Ligue 1, Eredivisie, Championship and others). Adding a
-league is a config change plus its team names in the registry —
-`python scripts/check_api.py --competition PD` reports exactly which aliases
-are missing.
-
-Worth being honest about the value, though: five leagues is the same model run
-five times, not a five-times-better model. Dixon-Coles fits each league
-independently — there is no shared signal unless you model cross-league
-strength, which is genuinely hard (teams only meet in European competition, so
-the graph connecting leagues is sparse). Depth on one league — tuned decay,
-market benchmarking, honest calibration — is the stronger portfolio piece.
+108 tests, network-free — all sources are mocked.
