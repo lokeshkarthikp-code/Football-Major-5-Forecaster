@@ -6,8 +6,8 @@ model can beat the bookmaker's closing line.
 
 **It can't.** The study is the point.
 
-🔗 **[Live app](https://pl-forecaster.streamlit.app)** ·
-📊 **[Evaluation study](https://pl-forecaster.streamlit.app/case_study)**
+🔗 **[Live app](https://european-league-forecaster-lkp.streamlit.app/)** ·
+📊 **[Evaluation study](https://european-league-forecaster-lkp.streamlit.app/case_study)**
 
 ---
 
@@ -120,13 +120,14 @@ analysis/                 one-off study scripts
 ## Running it
 
 ```bash
-git clone https://github.com/lokeshkarthikp-code/pl-forecaster
+git clone https://github.com/lokeshkarthikp-code/Football-Major-5-Forecaster
 pip install -r requirements.txt
 streamlit run app.py    # reads cached data; no API key needed
 ```
 
-Fixtures need a free [football-data.org](https://www.football-data.org) token
-in `FOOTBALL_DATA_TOKEN`. Results and odds need no key.
+Refreshing the data needs a free
+[football-data.org](https://www.football-data.org) token in
+`FOOTBALL_DATA_TOKEN`. Results and odds need no key.
 
 ## Data
 
