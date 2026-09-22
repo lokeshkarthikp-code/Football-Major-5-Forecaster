@@ -25,6 +25,7 @@ from plfc.leagues import display_name
 from plfc.ledger import latest_before_kickoff, load_ledger, track_record
 from plfc.model import DixonColes
 from plfc.multileague import available_leagues
+from plfc.ratingflow import load_history
 
 st.set_page_config(page_title="Football Forecaster", page_icon="⚽", layout="wide")
 
@@ -151,9 +152,9 @@ if stamp:
 league_matches = _filter_league(matches, league)
 model = _model(league, xi, shrinkage, stamp or "unknown")
 
-tab_fix, tab_any, tab_week, tab_rec, tab_rate, tab_val = st.tabs(
+tab_fix, tab_any, tab_week, tab_rec, tab_rate, tab_move, tab_val = st.tabs(
     ["This weekend", "Any fixture", "Weekly scorecard", "Track record",
-     "Team ratings", "How good is it?"]
+     "Team ratings", "Rating movement", "How good is it?"]
 )
 
 
@@ -475,6 +476,87 @@ with tab_rate:
         "Scale is estimated per league. Values are not comparable between "
         "leagues — clubs meet across them too rarely to place on a common scale."
     )
+
+
+# --- rating movement -------------------------------------------------------
+@st.cache_data(ttl=3600)
+def _history(data_version: str) -> pd.DataFrame:
+    return load_history()
+
+
+with tab_move:
+    hist = _history(stamp or "unknown")
+    hist = hist[hist["league"] == league] if not hist.empty else hist
+
+    if hist.empty:
+        st.info("No rating history for this league yet. Run "
+                "`python -m plfc.ratingflow`.")
+    else:
+        import altair as alt
+
+        st.markdown(
+            "How each result moved a team's rating, and what that did to the "
+            "prediction for their next match. Ratings move on surprise: "
+            "points won minus points the model expected."
+        )
+
+        latest = hist[hist["date"] == hist["date"].max()]
+        movers = latest.reindex(
+            latest["rating_change"].abs().sort_values(ascending=False).index).head(8)
+        st.markdown(f"#### Biggest movers — {pd.Timestamp(hist['date'].max()):%d %b %Y}")
+        st.dataframe(
+            movers[["team", "opponent", "venue", "goals_for", "goals_against",
+                    "p_win", "surprise", "rating_change", "next_opponent",
+                    "next_p_win_before", "next_p_win_after"]].round(3),
+            use_container_width=True, hide_index=True,
+        )
+
+        teams_ranked = (hist.sort_values("date").groupby("team")["rating_after"]
+                        .last().sort_values(ascending=False).index.tolist())
+        team = st.selectbox("Team", teams_ranked, key="move_team")
+        t = hist[hist["team"] == team].sort_values("date")
+
+        line = alt.Chart(t).mark_line(color="#999999").encode(
+            x=alt.X("date:T", title=None),
+            y=alt.Y("rating_after:Q", title="Rating after match",
+                    scale=alt.Scale(zero=False)))
+        dots = alt.Chart(t).mark_point(size=90, filled=True, opacity=1).encode(
+            x="date:T", y="rating_after:Q",
+            color=alt.Color("result:N", title=None,
+                            scale=alt.Scale(domain=["W", "D", "L"],
+                                            range=["#2e7d32", "#9e9e9e", "#c62828"])),
+            tooltip=["date:T", "opponent", "venue", "goals_for", "goals_against",
+                     alt.Tooltip("p_win:Q", format=".0%"),
+                     alt.Tooltip("surprise:Q", format="+.2f"),
+                     alt.Tooltip("rating_change:Q", format="+.3f")])
+        st.altair_chart(line + dots, use_container_width=True)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Rating now", f"{t['rating_after'].iloc[-1]:.3f}",
+                  delta=f"{t['rating_after'].iloc[-1] - t['rating_before'].iloc[0]:+.3f} this season")
+        c2.metric("Points vs expected",
+                  f"{t['points'].sum()} / {t['expected_points'].sum():.1f}")
+        big = t.loc[t["surprise"].abs().idxmax()]
+        c3.metric("Biggest surprise",
+                  f"{big['result']} vs {big['opponent']}",
+                  delta=f"{big['rating_change']:+.3f} rating", delta_color="off")
+
+        show = t.assign(
+            score=t["goals_for"].astype(str) + "-" + t["goals_against"].astype(str))
+        st.dataframe(
+            show[["date", "opponent", "venue", "rating_gap", "p_win", "score",
+                  "result", "surprise", "attack_change", "defence_change",
+                  "rating_change", "next_opponent", "next_p_win_before",
+                  "next_p_win_after", "next_p_win_change"]]
+            .sort_values("date", ascending=False).round(3),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "rating_gap = this team minus opponent going in. next_p_win "
+            "before/after = the next match's win chance without and with this "
+            "result. Other matches played the same day feed in too. Ratings are "
+            "on this league's own scale."
+        )
 
 
 # --- honesty tab -----------------------------------------------------------

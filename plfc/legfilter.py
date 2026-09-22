@@ -276,3 +276,163 @@ def suggest_legs(models: dict, fixtures: pd.DataFrame, shortlist: list[str],
             out["ev"] = out["model_p"] * out["odds"] - 1.0
 
     return out.sort_values("model_p", ascending=False).reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Week selection: bet some weeks, sit out others -- tested honestly
+# ---------------------------------------------------------------------------
+
+def select_weeks(legs: pd.DataFrame, *, k: int = 3, min_p: float = 0.0,
+                 min_ev: float = -1.0, max_leg_odds: float = 99.0,
+                 home_only: bool = False, skip_elite_clash: bool = True,
+                 rank_by: str = "model_p") -> pd.DataFrame:
+    """Apply one betting rule. Returns one row per week actually bet.
+
+    Each week: drop clubs facing another shortlisted club (Madrid v
+    Barcelona removes both), drop legs failing the thresholds, rank what
+    is left, take the top k. Fewer than k qualifying legs -> sit out.
+    """
+    q = legs
+    if skip_elite_clash:
+        elite = set(legs["team"])
+        q = q[~q["opponent"].isin(elite)]
+    q = q[(q["model_p"] >= min_p) & (q["ev"] >= min_ev)
+          & (q["odds"] <= max_leg_odds)]
+    if home_only:
+        q = q[q["venue"] == "H"]
+    if q.empty:
+        return pd.DataFrame()
+
+    q = (q.sort_values(["week_start", rank_by], ascending=[True, False])
+           .drop_duplicates(["week_start", "team"]))
+    top = q.groupby("week_start").head(k)
+    wk = (top.groupby("week_start")
+             .agg(legs=("won", "size"), all_won=("won", "all"),
+                  odds=("odds", "prod"), season=("season", "first"))
+             .reset_index())
+    return wk[wk["legs"] == k].reset_index(drop=True)
+
+
+def _returns(wk: pd.DataFrame) -> dict:
+    if wk.empty:
+        return {"bets": 0, "hit_rate": np.nan, "mean_odds": np.nan,
+                "roi": np.nan, "roi_se": np.nan}
+    pay = np.where(wk["all_won"], wk["odds"], 0.0) - 1.0
+    return {
+        "bets": int(len(wk)),
+        "hit_rate": float(wk["all_won"].mean()),
+        "mean_odds": float(wk["odds"].mean()),
+        "roi": float(pay.mean()),
+        "roi_se": (float(pay.std(ddof=1) / np.sqrt(len(pay)))
+                   if len(pay) > 1 else np.nan),
+    }
+
+
+def rule_grid() -> list[dict]:
+    """Every rule combination tried. 576 in total."""
+    grid = []
+    for k in (2, 3):
+        for min_p in (0.0, 0.55, 0.60, 0.65, 0.70, 0.75):
+            for min_ev in (-1.0, -0.05, 0.0, 0.05):
+                for max_odds in (99.0, 1.5, 1.3):
+                    for home_only in (False, True):
+                        for rank_by in ("model_p", "ev"):
+                            grid.append(dict(k=k, min_p=min_p, min_ev=min_ev,
+                                             max_leg_odds=max_odds,
+                                             home_only=home_only,
+                                             rank_by=rank_by))
+    return grid
+
+
+def fair_test(legs: pd.DataFrame, *, first_test_season: int = 2023,
+              min_train_bets: int = 50) -> dict:
+    """Tune on early seasons, run the chosen rule untouched on later ones.
+
+    Every rule is scored on TRAIN seasons only. The best one (with at least
+    `min_train_bets`, so a rule that fired three times cannot win) is then
+    applied to TEST seasons, which played no part in choosing it. The test
+    ROI is the only number that answers whether week selection works.
+
+    Also reported: correlation between train and test ROI across rules.
+    If picking weeks is a real skill, rules that did well early should
+    tend to do well later. If it is noise, it sits near zero.
+    """
+    train = legs[legs["season"] < first_test_season]
+    test = legs[legs["season"] >= first_test_season]
+
+    rows = []
+    for r in rule_grid():
+        tr = _returns(select_weeks(train, **r))
+        te = _returns(select_weeks(test, **r))
+        rows.append({**r,
+                     **{f"train_{k}": v for k, v in tr.items()},
+                     **{f"test_{k}": v for k, v in te.items()}})
+    allr = pd.DataFrame(rows)
+
+    eligible = allr[allr["train_bets"] >= min_train_bets]
+    ranked = eligible.sort_values("train_roi", ascending=False)
+    both = eligible.dropna(subset=["train_roi", "test_roi"])
+    corr = (float(both["train_roi"].corr(both["test_roi"]))
+            if len(both) > 2 else np.nan)
+
+    return {
+        "rules_tested": len(allr),
+        "rules_eligible": len(eligible),
+        "profitable_on_train": int((eligible["train_roi"] > 0).sum()),
+        "profitable_on_test": int((eligible["test_roi"] > 0).sum()),
+        "train_test_correlation": corr,
+        "best_rule": ranked.iloc[0] if len(ranked) else None,
+        "top10": ranked.head(10),
+        "train_seasons": sorted(int(s) for s in train["season"].dropna().unique()),
+        "test_seasons": sorted(int(s) for s in test["season"].dropna().unique()),
+    }
+
+
+def _main() -> None:
+    from .ingest import load_matches
+    from .multileague import load_backtest
+
+    pd.set_option("display.width", 220)
+    legs = shortlisted_legs(load_backtest(), load_matches(), min_rate=0.60)
+    r = fair_test(legs)
+    b = r["best_rule"]
+    rule_cols = ["k", "min_p", "min_ev", "max_leg_odds", "home_only", "rank_by"]
+
+    print(f"Tuned on seasons  {r['train_seasons']}")
+    print(f"Tested on seasons {r['test_seasons']}  (never seen during tuning)\n")
+    print(f"Rules tested: {r['rules_tested']}   with enough bets: "
+          f"{r['rules_eligible']}")
+    print(f"Profitable on train: {r['profitable_on_train']}   "
+          f"on test: {r['profitable_on_test']}")
+    print(f"Train vs test ROI correlation across rules: "
+          f"{r['train_test_correlation']:+.2f}\n")
+
+    if b is None:
+        print("No rule had enough bets on the training seasons.")
+        return
+
+    print("=== Best rule on train ===")
+    print(b[rule_cols].to_string())
+    print(f"\n  TRAIN  {int(b['train_bets'])} bets  hit {b['train_hit_rate']:.1%}  "
+          f"ROI {b['train_roi']:+.1%}")
+    print(f"  TEST   {int(b['test_bets'])} bets  hit {b['test_hit_rate']:.1%}  "
+          f"ROI {b['test_roi']:+.1%}  (SE {b['test_roi_se']:.1%})")
+
+    tb, tr, se = int(b["test_bets"]), b["test_roi"], b["test_roi_se"]
+    if tb < 30:
+        verdict = "too few test bets to read either way"
+    elif tr > 2 * se:
+        verdict = "profitable on unseen seasons, beyond two standard errors"
+    elif tr < -2 * se:
+        verdict = "loses on unseen seasons, beyond two standard errors"
+    else:
+        verdict = "inside two standard errors of zero on unseen seasons"
+    print(f"  -> {verdict}")
+
+    print("\n=== Top 10 rules on train, and what they did on test ===")
+    cols = rule_cols + ["train_bets", "train_roi", "test_bets", "test_roi"]
+    print(r["top10"][cols].round(3).to_string(index=False))
+
+
+if __name__ == "__main__":
+    _main()
